@@ -254,12 +254,12 @@ export async function syncedSubtitle(
   const original = await fetchSubtitle(link.subtitleUrl);
   // Latin-1 maps every byte to one character, so text in any encoding comes
   // back byte for byte; only the ASCII timestamps are rewritten.
-  const { body, outcome } = await judgeToFile(
-    original.body.toString('latin1'),
-    link
-  );
+  const text = original.body.toString('latin1');
+  const { body, outcome } = await judgeToFile(text, link);
+  if (outcome === 'notice') noteNotice(link.subtitleUrl, text);
+  // A notice is kept briefly: the real subtitle may come once the quota resets.
   await outcomes()
-    .set(token, outcome, LINK_TTL_S)
+    .set(token, outcome, outcome === 'notice' ? NOTICE_TTL_S : LINK_TTL_S)
     .catch(() => undefined);
   if (body === null) return { ...original, synced: false };
   await synced().set(
@@ -293,8 +293,19 @@ export type SyncOutcome =
   | 'in-time'
   /** Matched no timing clearly, so left as it was. */
   | 'unmatched'
-  /** A placeholder, or a file whose own subtitle can't be read. */
+  /**
+   * A few lines standing in for a subtitle: a provider's error ("quota
+   * reached") or a "translating…" placeholder.
+   */
+  | 'notice'
+  /** Unreadable, or its file's own subtitle can't be read. */
   | 'unchecked';
+
+/** Whether `text` is a handful of lines standing in for a subtitle, not a subtitle. */
+export function isNotice(text: string): boolean {
+  const timed = readTimes(text);
+  return !!timed && timed.spans.length < MIN_LINES;
+}
 
 /** `text` against the file `link` names: the retimed text, if any, and how it came out. */
 async function judgeToFile(
@@ -302,8 +313,8 @@ async function judgeToFile(
   link: SyncLink
 ): Promise<{ body: string | null; outcome: SyncOutcome }> {
   const timed = readTimes(text);
-  if (!timed || timed.spans.length < MIN_LINES)
-    return { body: null, outcome: 'unchecked' };
+  if (!timed) return { body: null, outcome: 'unchecked' };
+  if (timed.spans.length < MIN_LINES) return { body: null, outcome: 'notice' };
   const reference = await referenceFor(link);
   if (!reference) return { body: null, outcome: 'unchecked' };
   const why: PlanNote[] = [];
@@ -348,6 +359,36 @@ const ON_DEMAND =
 
 export const madeOnDemand = (url: string) => ON_DEMAND.test(url);
 
+/**
+ * Subtitles whose every download counts against a small quota on the
+ * provider's key: SubDL's. Checking them ahead would spend it on subtitles
+ * nobody opens, so they are checked only when opened.
+ */
+const QUOTA_LIMITED = /(?:^|[/_-])subdl[_-]/i;
+
+/** Whether a list may fetch this subtitle ahead of time to check it. */
+export const checkedAhead = (url: string) =>
+  !madeOnDemand(url) && !QUOTA_LIMITED.test(url);
+
+/** How long a quota-limited provider is taken as spent after it answers with a quota notice. */
+const QUOTA_PAUSE_MS = 60 * 60 * 1000;
+/** How long a notice's outcome is kept for its subtitle. */
+const NOTICE_TTL_S = 3600;
+let quotaSpentUntil = 0;
+
+/** Records a quota-limited provider answering with a quota notice instead of its subtitle. */
+export function noteNotice(url: string, text: string, now = Date.now()) {
+  if (QUOTA_LIMITED.test(url) && /quota|\b429\b/i.test(text))
+    quotaSpentUntil = now + QUOTA_PAUSE_MS;
+}
+
+/**
+ * Whether this subtitle comes from a provider whose quota recently ran out:
+ * opening it would give the same notice, so lists put it last.
+ */
+export const quotaSpent = (url: string, now = Date.now()) =>
+  QUOTA_LIMITED.test(url) && now < quotaSpentUntil;
+
 /** How many subtitles are checked at once when a list is asked for. */
 const CHECKS_AT_ONCE = 4;
 
@@ -360,7 +401,7 @@ export async function checkSubtitles(
   items: { token: string; link: SyncLink }[],
   budgetMs: number
 ): Promise<Map<string, SyncOutcome>> {
-  const queue = items.filter((i) => !madeOnDemand(i.link.subtitleUrl));
+  const queue = items.filter((i) => checkedAhead(i.link.subtitleUrl));
   const work = async () => {
     while (queue.length) {
       const item = queue.shift()!;
@@ -379,9 +420,13 @@ export async function checkSubtitles(
     new Promise((resolve) => setTimeout(resolve, budgetMs)),
   ]);
   const found = new Map<string, SyncOutcome>();
-  for (const { token } of items) {
+  for (const { token, link } of items) {
     const outcome = await outcomes().get(token);
-    if (outcome) found.set(token, outcome);
+    // A retimed copy is kept here, so it still works when its provider's
+    // quota is spent; anything else would be downloaded again and get the notice.
+    if (quotaSpent(link.subtitleUrl) && outcome !== 'retimed')
+      found.set(token, 'notice');
+    else if (outcome) found.set(token, outcome);
   }
   return found;
 }

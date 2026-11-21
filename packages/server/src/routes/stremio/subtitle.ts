@@ -85,13 +85,15 @@ async function syncLinks(
   }
 
   // Players pick the first subtitle in their language, so the ones known to
-  // match the file go first and the ones that matched nothing go last.
+  // match the file go first, the ones that matched nothing after the rest,
+  // and a provider's notice standing in for a subtitle last of all.
   const outcomes = await checkSubtitles(checks, CHECK_BUDGET_MS);
   const rank = (subtitle: Subtitle) => {
     const token = tokens.get(subtitle);
     const outcome = token ? outcomes.get(token) : undefined;
     if (outcome === 'retimed' || outcome === 'in-time') return 0;
     if (outcome === 'unmatched') return 2;
+    if (outcome === 'notice') return 3;
     return 1;
   };
   answer.subtitles = answer.subtitles
