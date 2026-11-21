@@ -7,6 +7,8 @@ import {
   StremioTransformer,
   Cache,
   IdParser,
+  rememberOffered,
+  subtitleSyncEnabled,
 } from '@aiostreams/core';
 import { trackResource } from '../../middlewares/analytics.js';
 
@@ -62,14 +64,26 @@ router.get(
         throw new Error('Stream context not available');
       }
 
-      res
-        .status(200)
-        .json(
-          await transformer.transformStreams(
-            response,
-            streamContext.toFormatterContext(response.data.streams),
-            { provideStreamData, disableAutoplay }
-          )
+      const transformed = await transformer.transformStreams(
+        response,
+        streamContext.toFormatterContext(response.data.streams),
+        { provideStreamData, disableAutoplay }
+      );
+      res.status(200).json(transformed);
+      // The subtitle request that follows a play names the file only by its
+      // name and size; these map them back to the file.
+      if (subtitleSyncEnabled() && req.userData.uuid)
+        void rememberOffered(
+          req.userData.uuid,
+          type,
+          id,
+          (transformed.streams ?? []).map((s) => ({
+            url: s.url ?? '',
+            filename: s.behaviorHints?.filename ?? undefined,
+            size: s.behaviorHints?.videoSize ?? undefined,
+          }))
+        ).catch((error) =>
+          logger.warn({ error }, 'could not remember the offered files')
         );
     } catch (error) {
       let errorMessage =
