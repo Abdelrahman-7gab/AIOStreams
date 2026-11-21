@@ -46,7 +46,7 @@ export interface SyncLink {
 }
 
 /*
- * Kept in memory only, each within a byte budget (64 MB in all), dropping the
+ * Kept in memory only, each within a byte budget (256 MB in all), dropping the
  * least recently used past it and every entry once its time is up.
  */
 const MB = 1024 * 1024;
@@ -57,7 +57,7 @@ const textBytes = (...texts: (string | undefined)[]) =>
 const offered = () =>
   Cache.getInstance<string, OfferedFile[]>(
     'subsync-offered',
-    24 * MB,
+    64 * MB,
     'memory',
     {
       sizeOf: (files: OfferedFile[]) =>
@@ -65,13 +65,13 @@ const offered = () =>
     }
   );
 const links = () =>
-  Cache.getInstance<string, SyncLink>('subsync-links', 8 * MB, 'memory', {
+  Cache.getInstance<string, SyncLink>('subsync-links', 32 * MB, 'memory', {
     sizeOf: (l: SyncLink) => textBytes(l.subtitleUrl, l.fileUrl, l.fileKey),
   });
 const references = () =>
   Cache.getInstance<string, Span[] | 'none'>(
     'subsync-reference',
-    8 * MB,
+    32 * MB,
     'memory',
     {
       // A span is an object of two numbers, about 48 bytes.
@@ -82,7 +82,7 @@ const references = () =>
 const synced = () =>
   Cache.getInstance<string, { body: string; contentType: string }>(
     'subsync-body',
-    24 * MB,
+    128 * MB,
     'memory',
     {
       sizeOf: (b: { body: string; contentType: string }) =>
