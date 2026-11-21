@@ -27,10 +27,12 @@ const CHANGE_COST = 4;
 /**
  * How well a delay fits is the share of its lines the file's speech covers,
  * against the share covered at delays far from it, which is what chance
- * alone gives. A delay must clear chance by `MIN_LEAD` and reach `MIN_FIT`.
+ * alone gives. A delay must reach `MIN_FIT` and close `MIN_GAIN` of the gap
+ * between chance and a perfect fit: dense dialogue leaves chance high, so a
+ * fixed margin over it would ask for the impossible.
  */
 const MIN_FIT = 0.5;
-const MIN_LEAD = 0.2;
+const MIN_GAIN = 0.5;
 const CHANCE_OFFSETS_MS = [-67_000, -41_000, -23_000, 23_000, 41_000, 67_000];
 /** Steps in one direction this many times read as a drift, not as cuts. */
 const MIN_DRIFT_PARTS = 3;
@@ -108,10 +110,14 @@ function distinct(delays: number[]): number[] {
  */
 export function planRetime(
   reference: Span[],
-  target: Span[]
+  target: Span[],
+  why: PlanNote[] = []
 ): RetimePlan | null {
   const whole = alignSubtitles(reference, target, WHOLE_LIMIT_MS);
-  if (!whole) return null;
+  if (!whole) {
+    why.push({ outcome: 'no overlap with the file' });
+    return null;
+  }
   // A jump partway looks a little like a slow drift, so a frame rate is only
   // kept when it explains the lines better than steady time with its changes.
   const tries = [whole];
@@ -121,7 +127,7 @@ export function planRetime(
   }
   let best: ScoredPlan | null = null;
   for (const at of tries) {
-    const plan = planAt(reference, target, at);
+    const plan = planAt(reference, target, at, why);
     if (plan && (!best || plan.score > best.score)) best = plan;
   }
   if (!best) return null;
@@ -130,7 +136,7 @@ export function planRetime(
   if (best.parts.length >= MIN_DRIFT_PARTS) {
     const drift = driftOf(target, best);
     if (drift) {
-      const plan = planAt(reference, target, drift);
+      const plan = planAt(reference, target, drift, why);
       if (plan && plan.score >= best.score) best = plan;
     }
   }
@@ -175,13 +181,32 @@ type ScoredPlan = RetimePlan & {
   score: number;
 };
 
+/** What one try at a frame rate and delay found, for logs. */
+export interface PlanNote {
+  ratio?: number;
+  delayMs?: number;
+  confident?: boolean;
+  clearParts?: string;
+  fit?: number;
+  chance?: number;
+  outcome: string;
+}
+
 /** The plan for `target` at the whole's frame rate and delay, `whole`. */
 function planAt(
   reference: Span[],
   target: Span[],
-  whole: Alignment
+  whole: Alignment,
+  why: PlanNote[]
 ): ScoredPlan | null {
   const { ratio } = whole;
+  const note: PlanNote = {
+    ratio: Math.round(ratio * 1e5) / 1e5,
+    delayMs: whole.delayMs,
+    confident: whole.confident,
+    outcome: 'planned',
+  };
+  why.push(note);
   // A cut splits the match between two delays, so the whole may be unsure
   // while each part is clear; its parts decide then.
 
@@ -217,11 +242,14 @@ function planAt(
     }
   }
   // Unsure as a whole, it belongs to this file only if most of its parts clearly do.
+  note.clearParts = `${clear}/${tried}`;
   if (
     !whole.confident &&
     (clear < MIN_CLEAR_PARTS || clear < tried * CLEAR_SHARE)
-  )
+  ) {
+    note.outcome = 'unsure as a whole and too few parts clear';
     return null;
+  }
   const delays = distinct(found);
 
   const spans = timeline(reference);
@@ -294,7 +322,7 @@ function planAt(
       : { fit: 0, chance: 0 };
   };
   const passes = (j: { fit: number; chance: number }) =>
-    j.fit >= MIN_FIT && j.fit - j.chance >= MIN_LEAD;
+    j.fit >= MIN_FIT && j.fit - j.chance >= MIN_GAIN * (1 - j.chance);
 
   // Every delay must fit on its own: a part that only chance supports means
   // the subtitle was made for another cut, and the parts can't be trusted.
@@ -305,7 +333,12 @@ function planAt(
   if (runs.length > 1 && !runs.every(([a, b]) => passes(judge(a, b))))
     choice.fill(wholeAt);
   const overall = judge(0, n);
-  if (!passes(overall)) return null;
+  note.fit = Math.round(overall.fit * 100) / 100;
+  note.chance = Math.round(overall.chance * 100) / 100;
+  if (!passes(overall)) {
+    note.outcome = 'fits no better than chance';
+    return null;
+  }
 
   const perLine = new Array<number>(target.length);
   const parts: RetimePart[] = [];

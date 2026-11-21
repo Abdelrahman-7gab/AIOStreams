@@ -43,7 +43,10 @@ export async function finalUrl(
       current = new URL(location, current).toString();
       continue;
     }
-    if (res.status >= 400) throw new Error(`the file answered ${res.status}`);
+    if (res.status >= 400)
+      throw new Error(
+        `${new URL(current).host} answered ${res.status} after ${hop} redirect${hop === 1 ? '' : 's'}`
+      );
     return current;
   }
   throw new Error('too many redirects to the file');

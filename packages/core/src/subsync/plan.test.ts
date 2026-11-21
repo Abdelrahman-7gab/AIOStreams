@@ -29,6 +29,20 @@ function episode(count: number, seed: number): Span[] {
 const moved = (lines: Span[], byMs: number) =>
   lines.map((l) => ({ startMs: l.startMs + byMs, endMs: l.endMs + byMs }));
 
+/** A rapid sitcom: lines of 0.8–3 s with 0.05–0.8 s between them, so speech fills most of the time. */
+function sitcom(count: number, seed: number): Span[] {
+  const next = random(seed);
+  const lines: Span[] = [];
+  let t = 20_000;
+  for (let i = 0; i < count; i++) {
+    t += 50 + next() * 750;
+    const length = 800 + next() * 2200;
+    lines.push({ startMs: Math.round(t), endMs: Math.round(t + length) });
+    t += length;
+  }
+  return lines;
+}
+
 const NEAR_MS = 120;
 
 describe('planRetime', () => {
@@ -150,6 +164,27 @@ describe('planRetime', () => {
       assert.equal(plan.parts.length, 1, JSON.stringify(plan.parts));
       assert.ok(Math.abs(plan.parts[0].delayMs - -2000) <= NEAR_MS);
     }
+  });
+
+  it('syncs a rapid sitcom, where speech fills most of the time', () => {
+    const reference = sitcom(700, 11);
+    const next = random(5);
+    // A translation 1.5 s early, its lines jittered and a tenth of them dropped.
+    const target: Span[] = [];
+    reference.forEach((l) => {
+      if (next() < 0.1) return;
+      const j = (next() - 0.5) * 400;
+      target.push({ startMs: l.startMs - 1500 + j, endMs: l.endMs - 1500 + j });
+    });
+    const why: unknown[] = [];
+    const plan = planRetime(reference, target, why as never);
+    assert.ok(plan, JSON.stringify(why));
+    for (const d of plan.delays)
+      assert.ok(Math.abs(d - 1500) <= 300, `delay ${d}`);
+  });
+
+  it('still leaves alone a sitcom subtitle from another episode', () => {
+    assert.equal(planRetime(sitcom(700, 12), sitcom(700, 13)), null);
   });
 
   it('leaves alone a subtitle that belongs to something else', () => {

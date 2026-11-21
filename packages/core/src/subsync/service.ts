@@ -6,7 +6,7 @@ import {
   readBodyCapped,
 } from '../utils/index.js';
 import type { Span } from './align.js';
-import { planRetime } from './plan.js';
+import { planRetime, type PlanNote } from './plan.js';
 import { finalUrl } from './reader.js';
 import { applyPlan, readTimes } from './retime.js';
 import { pickReference, readFileTimings } from './timings.js';
@@ -273,10 +273,11 @@ export async function retimeToFile(
   if (!timed || timed.spans.length < MIN_LINES) return null;
   const reference = await referenceFor(link);
   if (!reference) return null;
-  const plan = planRetime(reference, timed.spans);
+  const why: PlanNote[] = [];
+  const plan = planRetime(reference, timed.spans, why);
   if (!plan) {
     logger.debug(
-      { subtitle: link.subtitleUrl },
+      { subtitle: link.subtitleUrl, lines: timed.spans.length, why },
       'the subtitle doesn’t match this file'
     );
     return null;
