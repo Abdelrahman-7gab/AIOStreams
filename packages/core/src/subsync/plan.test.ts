@@ -84,6 +84,39 @@ describe('planRetime', () => {
       assert.ok(Math.abs(d) <= NEAR_MS, `delay ${d}`);
   });
 
+  it('stretches a subtitle made for 24 fps onto a 23.976 fps file', () => {
+    const reference = episode(500, 7);
+    // Timed for 24 fps: the file's time t shows at t × 1000/1001 in it, which
+    // drifts about 2.7 s over 45 minutes.
+    const target = reference.map((l) => ({
+      startMs: (l.startMs * 1000) / 1001,
+      endMs: (l.endMs * 1000) / 1001,
+    }));
+    const plan = planRetime(reference, target);
+    assert.ok(plan);
+    assert.ok(Math.abs(plan.ratio - 1001 / 1000) < 1e-9, `ratio ${plan.ratio}`);
+    assert.equal(plan.parts.length, 1, JSON.stringify(plan.parts));
+    for (const d of plan.delays)
+      assert.ok(Math.abs(d) <= NEAR_MS, `delay ${d}`);
+  });
+
+  it('does not stitch together a subtitle whose second half is from elsewhere', () => {
+    const reference = episode(400, 8);
+    // Half matches the file (2 s late), half is another episode's lines.
+    const other = episode(400, 77);
+    const target = [
+      ...moved(reference.slice(0, 200), 2000),
+      ...other.slice(200),
+    ];
+    const plan = planRetime(reference, target);
+    // Either it is left alone, or it gets the one delay its real half shows;
+    // it never gets made-up jumps for the other half.
+    if (plan) {
+      assert.equal(plan.parts.length, 1, JSON.stringify(plan.parts));
+      assert.ok(Math.abs(plan.parts[0].delayMs - -2000) <= NEAR_MS);
+    }
+  });
+
   it('leaves alone a subtitle that belongs to something else', () => {
     const reference = episode(400, 4);
     const target = episode(400, 99);

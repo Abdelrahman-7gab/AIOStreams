@@ -283,7 +283,13 @@ export async function retimeToFile(
   }
   if (plan.ratio === 1 && plan.parts.every((p) => p.delayMs === 0)) return null;
   logger.debug(
-    { subtitle: link.subtitleUrl, ratio: plan.ratio, parts: plan.parts },
+    {
+      subtitle: link.subtitleUrl,
+      ratio: plan.ratio,
+      parts: plan.parts,
+      fit: plan.fit,
+      chance: plan.chance,
+    },
     'retimed a subtitle to its file'
   );
   return applyPlan(timed, plan);

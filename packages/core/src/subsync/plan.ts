@@ -1,4 +1,4 @@
-import { alignSubtitles, type Span } from './align.js';
+import { alignSubtitles, type Alignment, type Span } from './align.js';
 
 /** How far off a whole subtitle may be. */
 const WHOLE_LIMIT_MS = 600_000;
@@ -24,6 +24,14 @@ const LONGEST_MS = 12_000;
  * the rest.
  */
 const CHANGE_COST = 4;
+/**
+ * How well a delay fits is the share of its lines the file's speech covers,
+ * against the share covered at delays far from it, which is what chance
+ * alone gives. A delay must clear chance by `MIN_LEAD` and reach `MIN_FIT`.
+ */
+const MIN_FIT = 0.5;
+const MIN_LEAD = 0.2;
+const CHANCE_OFFSETS_MS = [-67_000, -41_000, -23_000, 23_000, 41_000, 67_000];
 
 export interface RetimePart {
   /** The first line, by position in the subtitle, the delay applies from. */
@@ -38,6 +46,9 @@ export interface RetimePlan {
   delays: number[];
   /** The delays in the order they apply, for logs. */
   parts: RetimePart[];
+  /** How well the retimed lines fit the file, and what chance alone gives, for logs. */
+  fit: number;
+  chance: number;
 }
 
 /** Sorted, joined speech: the file's lines as one timeline to measure against. */
@@ -97,11 +108,39 @@ export function planRetime(
   reference: Span[],
   target: Span[]
 ): RetimePlan | null {
-  // A cut splits the match between two delays, so the whole may be unsure
-  // while each part is clear; its parts decide then.
   const whole = alignSubtitles(reference, target, WHOLE_LIMIT_MS);
   if (!whole) return null;
+  // A jump partway looks a little like a slow drift, so a frame rate is only
+  // kept when it explains the lines better than steady time with its changes.
+  const tries = [whole];
+  if (whole.ratio !== 1) {
+    const steady = alignSubtitles(reference, target, WHOLE_LIMIT_MS, [1]);
+    if (steady) tries.push(steady);
+  }
+  let best: ScoredPlan | null = null;
+  for (const at of tries) {
+    const plan = planAt(reference, target, at);
+    if (plan && (!best || plan.score > best.score)) best = plan;
+  }
+  if (!best) return null;
+  const { score: _score, ...plan } = best;
+  return plan;
+}
+
+type ScoredPlan = RetimePlan & {
+  /** Lines that fit, less what its changes of delay cost. */
+  score: number;
+};
+
+/** The plan for `target` at the whole's frame rate and delay, `whole`. */
+function planAt(
+  reference: Span[],
+  target: Span[],
+  whole: Alignment
+): ScoredPlan | null {
   const { ratio } = whole;
+  // A cut splits the match between two delays, so the whole may be unsure
+  // while each part is clear; its parts decide then.
 
   const order = target
     .map((_, i) => i)
@@ -127,8 +166,9 @@ export function planRetime(
     const near = reference.filter((r) => r.endMs > lo && r.startMs < hi);
     if (near.length < MIN_PART_REFERENCE) continue;
     tried++;
-    const local = alignSubtitles(near, part, PART_LIMIT_MS);
-    if (local?.confident && local.ratio === 1) {
+    // The whole's frame rate is already applied; a part only finds its delay.
+    const local = alignSubtitles(near, part, PART_LIMIT_MS, [1]);
+    if (local?.confident) {
       clear++;
       found.push(whole.delayMs + local.delayMs);
     }
@@ -186,6 +226,44 @@ export function planRetime(
   const chosen = score[last];
   if (changes === 0 || chosen - uniform < CHANGE_COST) choice.fill(wholeAt);
 
+  // How well lines `from`..`to` fit at their chosen delays, and at delays far
+  // from them, which chance alone gives.
+  const judge = (from: number, to: number) => {
+    let fit = 0;
+    let chance = 0;
+    let counted = 0;
+    for (let i = from; i < to; i++) {
+      const line = lines[i];
+      const length = line.endMs - line.startMs;
+      if (length <= 0 || length > LONGEST_MS) continue;
+      const d = delays[choice[i]];
+      counted++;
+      fit += fits[i][choice[i]];
+      for (const off of CHANCE_OFFSETS_MS)
+        chance +=
+          covered(
+            { startMs: line.startMs + d + off, endMs: line.endMs + d + off },
+            spans
+          ) / CHANCE_OFFSETS_MS.length;
+    }
+    return counted
+      ? { fit: fit / counted, chance: chance / counted }
+      : { fit: 0, chance: 0 };
+  };
+  const passes = (j: { fit: number; chance: number }) =>
+    j.fit >= MIN_FIT && j.fit - j.chance >= MIN_LEAD;
+
+  // Every delay must fit on its own: a part that only chance supports means
+  // the subtitle was made for another cut, and the parts can't be trusted.
+  const runs: [number, number][] = [];
+  for (let i = 0; i < n; i++)
+    if (i === 0 || choice[i] !== choice[i - 1]) runs.push([i, i + 1]);
+    else runs[runs.length - 1][1] = i + 1;
+  if (runs.length > 1 && !runs.every(([a, b]) => passes(judge(a, b))))
+    choice.fill(wholeAt);
+  const overall = judge(0, n);
+  if (!passes(overall)) return null;
+
   const perLine = new Array<number>(target.length);
   const parts: RetimePart[] = [];
   for (let i = 0; i < n; i++) {
@@ -194,5 +272,12 @@ export function planRetime(
     if (i === 0 || choice[i] !== choice[i - 1])
       parts.push({ fromLine: order[i], delayMs });
   }
-  return { ratio, delays: perLine, parts };
+  return {
+    ratio,
+    delays: perLine,
+    parts,
+    fit: Math.round(overall.fit * 100) / 100,
+    chance: Math.round(overall.chance * 100) / 100,
+    score: overall.fit * n - CHANGE_COST * (parts.length - 1),
+  };
 }

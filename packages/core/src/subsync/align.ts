@@ -28,8 +28,11 @@ const MIN_EDGE_LEAD = 2;
 const AGREE_MS = 300;
 
 const FILM = 24000 / 1001;
-/** Film played at the PAL rate and back. */
-const RATIOS = [1, 25 / FILM, FILM / 25];
+/**
+ * Film played at the PAL rate and back, and 24 fps against NTSC's 23.976,
+ * which drifts a second every quarter hour.
+ */
+const RATIOS = [1, 25 / FILM, FILM / 25, 1001 / 1000, 1000 / 1001];
 
 /** The speech in `lines`, in order, with overlapping lines joined. */
 function speech(lines: Span[], ratio = 1): Span[] {
@@ -229,7 +232,8 @@ function edgesAgree(
 export function alignSubtitles(
   reference: Span[],
   target: Span[],
-  limitMs: number
+  limitMs: number,
+  ratios: readonly number[] = RATIOS
 ): Alignment | null {
   const heard = speech(reference);
   if (!heard.length) return null;
@@ -241,7 +245,7 @@ export function alignSubtitles(
   ];
   const curves = [new Curve(limitMs), new Curve(limitMs)];
   let found: Match | null = null;
-  for (const ratio of RATIOS) {
+  for (const ratio of ratios) {
     const lines = speech(target, ratio).filter(
       (s) => s.endMs > range[0] && s.startMs < range[1]
     );

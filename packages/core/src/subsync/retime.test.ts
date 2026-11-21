@@ -7,6 +7,8 @@ const plan = (delays: number[], ratio = 1): RetimePlan => ({
   ratio,
   delays,
   parts: [{ fromLine: 0, delayMs: delays[0] }],
+  fit: 1,
+  chance: 0,
 });
 
 describe('readTimes and applyPlan', () => {
