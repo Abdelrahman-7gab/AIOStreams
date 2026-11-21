@@ -102,19 +102,6 @@ async function syncLinks(
 
 /** How long a subtitle list waits for its subtitles to be checked. */
 const CHECK_BUDGET_MS = 6000;
-/** Subtitles kept per language, the best matched first. */
-const PER_LANGUAGE = 5;
-
-/** At most `PER_LANGUAGE` subtitles of each language, in the order given. */
-function capPerLanguage(answer: SubtitleResponse) {
-  const seen = new Map<string, number>();
-  answer.subtitles = answer.subtitles.filter((subtitle) => {
-    if (subtitle.id.startsWith('error.')) return true;
-    const count = (seen.get(subtitle.lang) ?? 0) + 1;
-    seen.set(subtitle.lang, count);
-    return count <= PER_LANGUAGE;
-  });
-}
 
 router.use(trackResource('subtitle'));
 
@@ -160,7 +147,6 @@ router.get(
         ).catch((error) =>
           logger.warn({ error }, 'could not point subtitles at synced links')
         );
-      if (subtitleSyncEnabled()) capPerLanguage(answer);
       res.status(200).json(answer);
     } catch (error) {
       let errorMessage =
