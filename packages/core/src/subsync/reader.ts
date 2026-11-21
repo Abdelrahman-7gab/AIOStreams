@@ -27,15 +27,23 @@ export async function finalUrl(
   timeoutMs: number
 ): Promise<string> {
   let current = selfRouted(url);
-  for (let hop = 0; hop < MAX_HOPS; hop++) {
-    const res = await makeRequest(current, {
+  // Only the answer's status and headers are wanted: the body is dropped unread.
+  const ask = async (target: string, ranged: boolean) => {
+    const res = await makeRequest(target, {
       timeout: timeoutMs,
       method: 'GET',
       rawOptions: { redirect: 'manual' },
       ignoreRecursion: true,
-      headers: { Range: 'bytes=0-0' },
+      headers: ranged ? { Range: 'bytes=0-0' } : {},
     });
     res.body?.cancel().catch(() => {});
+    return res;
+  };
+  for (let hop = 0; hop < MAX_HOPS; hop++) {
+    let res = await ask(current, true);
+    // Some download servers refuse a one-byte range; asked plainly they answer.
+    if (hop > 0 && (res.status === 400 || res.status === 416))
+      res = await ask(current, false);
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location)
