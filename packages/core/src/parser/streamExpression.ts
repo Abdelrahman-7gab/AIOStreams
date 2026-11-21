@@ -1089,6 +1089,36 @@ export abstract class StreamExpressionEngine {
       });
     };
 
+    /**
+     * The streams whose running time is known and lies between `minMinutes`
+     * and `maxMinutes`, so `duration(streams, 1, runtime * 0.7)` finds a
+     * film's files that are far shorter than the film. A stream whose
+     * running time isn't known is never returned.
+     */
+    this.parser.functions.duration = function (
+      streams: ParsedStream[],
+      minMinutes?: number,
+      maxMinutes?: number
+    ) {
+      if (!Array.isArray(streams) || streams.some((stream) => !stream.type)) {
+        throw new Error('Your streams input must be an array of streams');
+      } else if (
+        (minMinutes !== undefined && typeof minMinutes !== 'number') ||
+        (maxMinutes !== undefined && typeof maxMinutes !== 'number')
+      ) {
+        throw new Error('Min and max duration must be numbers of minutes');
+      } else if (minMinutes === undefined && maxMinutes === undefined) {
+        throw new Error('You must provide at least one duration boundary');
+      }
+      return streams.filter((stream) => {
+        if (!stream.duration || stream.duration <= 0) return false;
+        const minutes = stream.duration / 60_000;
+        if (minMinutes !== undefined && minutes < minMinutes) return false;
+        if (maxMinutes !== undefined && minutes > maxMinutes) return false;
+        return true;
+      });
+    };
+
     this.parser.functions.bitrate = function (
       streams: ParsedStream[],
       minBitrate?: string | number,
