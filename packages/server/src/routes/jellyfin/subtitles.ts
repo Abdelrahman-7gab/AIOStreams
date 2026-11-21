@@ -3,9 +3,12 @@ import {
   Cache,
   convertSubtitle,
   createLogger,
+  createSyncLink,
   externalSubtitleFor,
   readBodyCapped,
+  retimeToFile,
   subtitleExtensionOf,
+  subtitleSyncEnabled,
   type SubtitleFormat,
 } from '@aiostreams/core';
 import { jfOptional, param } from './context.js';
@@ -84,7 +87,16 @@ async function subtitleHandler(req: Request, res: Response) {
     return;
   }
   const to = formatOf(param(req, 'format'));
-  const key = `${track.url}|${to}`;
+  // Timed to the file this source plays, once its own subtitle can be read.
+  const sync =
+    subtitleSyncEnabled() && source && (source.filename || source.size)
+      ? await createSyncLink(track.url, {
+          url: source.url,
+          filename: source.filename,
+          size: source.size,
+        }).catch(() => undefined)
+      : undefined;
+  const key = `${track.url}|${to}${sync ? `|${sync.link.fileKey}` : ''}`;
   let converted = await bodyCache.get(key).catch(() => undefined);
   let cacheable = true;
   if (!converted) {
@@ -93,8 +105,17 @@ async function subtitleHandler(req: Request, res: Response) {
       res.status(502).end();
       return;
     }
+    const retimed = sync
+      ? await retimeToFile(fetched.raw, sync.link).catch((error) => {
+          logger.debug(
+            { err: error instanceof Error ? error.message : String(error) },
+            'could not retime a subtitle to its file'
+          );
+          return null;
+        })
+      : null;
     converted = convertSubtitle(
-      fetched.raw,
+      retimed ?? fetched.raw,
       subtitleExtensionOf(track.url),
       to
     );

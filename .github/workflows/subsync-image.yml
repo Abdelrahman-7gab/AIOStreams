@@ -1,0 +1,44 @@
+name: Subtitle sync image
+
+# Builds this fork's server for ARM servers (Oracle A1) and publishes it to
+# GitHub's container registry as ghcr.io/<owner>/aiostreams:subsync.
+on:
+  push:
+    branches: [subtitle-sync]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aiostreams" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:subsync
+            ${{ steps.name.outputs.image }}:subsync-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=AIOStreams with server-side subtitle sync
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

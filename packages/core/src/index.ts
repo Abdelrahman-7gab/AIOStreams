@@ -105,3 +105,4 @@ export type {
   RunPlayChainConfig,
   RunPlayChainResult,
 } from './main/failover.js';
+export * from './subsync/index.js';

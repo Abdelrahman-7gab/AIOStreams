@@ -32,6 +32,7 @@ import {
   subtitle,
   addonCatalog,
   alias,
+  subsync,
 } from './routes/stremio/index.js';
 import {
   manifest as chillLinkManifest,
@@ -195,6 +196,7 @@ stremioAuthRouter.use('/stream', stremioStreamRateLimiter);
 stremioAuthRouter.use('/meta', stremioMetaRateLimiter);
 stremioAuthRouter.use('/catalog', stremioCatalogRateLimiter);
 stremioAuthRouter.use('/subtitles', stremioSubtitleRateLimiter);
+stremioAuthRouter.use('/subsync', stremioSubtitleRateLimiter);
 stremioAuthRouter.use(userDataMiddleware);
 stremioAuthRouter.use('/manifest.json', manifest);
 stremioAuthRouter.use('/stream', stream);
@@ -202,6 +204,7 @@ stremioAuthRouter.use('/configure', requireSessionIfAuthRequired, configure);
 stremioAuthRouter.use('/meta', meta);
 stremioAuthRouter.use('/catalog', catalog);
 stremioAuthRouter.use('/subtitles', subtitle);
+stremioAuthRouter.use('/subsync', subsync);
 stremioAuthRouter.use('/addon_catalog', addonCatalog);
 
 app.use('/stremio', stremioRouter); // For public routes
