@@ -45,21 +45,49 @@ export interface SyncLink {
   fileKey: string;
 }
 
+/*
+ * Kept in memory only, each within a byte budget (64 MB in all), dropping the
+ * least recently used past it and every entry once its time is up.
+ */
+const MB = 1024 * 1024;
+/** Strings count two bytes a character, as V8 may hold them. */
+const textBytes = (...texts: (string | undefined)[]) =>
+  texts.reduce((sum, t) => sum + (t?.length ?? 0) * 2, 64);
+
 const offered = () =>
-  Cache.getInstance<string, OfferedFile[]>('subsync-offered', 5000, 'memory');
+  Cache.getInstance<string, OfferedFile[]>(
+    'subsync-offered',
+    24 * MB,
+    'memory',
+    {
+      sizeOf: (files: OfferedFile[]) =>
+        files.reduce((sum, f) => sum + textBytes(f.url, f.filename), 64),
+    }
+  );
 const links = () =>
-  Cache.getInstance<string, SyncLink>('subsync-links', 50_000, 'memory');
+  Cache.getInstance<string, SyncLink>('subsync-links', 8 * MB, 'memory', {
+    sizeOf: (l: SyncLink) => textBytes(l.subtitleUrl, l.fileUrl, l.fileKey),
+  });
 const references = () =>
   Cache.getInstance<string, Span[] | 'none'>(
     'subsync-reference',
-    500,
-    'memory'
+    8 * MB,
+    'memory',
+    {
+      // A span is an object of two numbers, about 48 bytes.
+      sizeOf: (spans: Span[] | 'none') =>
+        spans === 'none' ? 64 : spans.length * 48 + 64,
+    }
   );
 const synced = () =>
   Cache.getInstance<string, { body: string; contentType: string }>(
     'subsync-body',
-    2000,
-    'memory'
+    24 * MB,
+    'memory',
+    {
+      sizeOf: (b: { body: string; contentType: string }) =>
+        textBytes(b.body, b.contentType),
+    }
   );
 
 const hash = (text: string) =>
