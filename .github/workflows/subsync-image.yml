@@ -1,10 +1,12 @@
 name: Subtitle sync image
 
 # Builds this fork's server for ARM servers (Oracle A1) and publishes it to
-# GitHub's container registry as ghcr.io/<owner>/aiostreams:subsync.
+# GitHub's container registry as ghcr.io/<owner>/aiostreams:<branch>:
+# subtitle-sync-release is the change on the release the server runs,
+# subtitle-sync on upstream's newest code.
 on:
   push:
-    branches: [subtitle-sync]
+    branches: [subtitle-sync, subtitle-sync-release]
   workflow_dispatch:
 
 permissions:
@@ -35,8 +37,8 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ steps.name.outputs.image }}:subsync
-            ${{ steps.name.outputs.image }}:subsync-${{ github.sha }}
+            ${{ steps.name.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.name.outputs.image }}:${{ github.ref_name }}-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=AIOStreams with server-side subtitle sync

@@ -31,7 +31,7 @@ export async function finalUrl(
     const res = await makeRequest(current, {
       timeout: timeoutMs,
       method: 'GET',
-      redirect: 'manual',
+      rawOptions: { redirect: 'manual' },
       ignoreRecursion: true,
       headers: { Range: 'bytes=0-0' },
     });
