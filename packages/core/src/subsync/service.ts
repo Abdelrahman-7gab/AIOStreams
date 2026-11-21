@@ -23,6 +23,8 @@ const SUBTITLE_TIMEOUT_MS = 20_000;
 const MAX_SUBTITLE_BYTES = 5 * 1024 * 1024;
 /** Fewer lines than this is a placeholder (such as "translating…"), not a subtitle. */
 const MIN_LINES = 30;
+/** Delays smaller than this leave a subtitle as it is. */
+const IN_SYNC_MS = 150;
 const MAX_OFFERED = 300;
 
 /** On unless `SUBTITLE_SYNC_ENABLED=false`. */
@@ -282,7 +284,17 @@ export async function retimeToFile(
     );
     return null;
   }
-  if (plan.ratio === 1 && plan.parts.every((p) => p.delayMs === 0)) return null;
+  // Already in time: moving lines by less than a frame or two changes nothing anyone sees.
+  if (
+    plan.ratio === 1 &&
+    plan.parts.every((p) => Math.abs(p.delayMs) < IN_SYNC_MS)
+  ) {
+    logger.debug(
+      { subtitle: link.subtitleUrl, fit: plan.fit, chance: plan.chance },
+      'the subtitle is already in time with this file'
+    );
+    return null;
+  }
   logger.debug(
     {
       subtitle: link.subtitleUrl,

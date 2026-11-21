@@ -13,7 +13,7 @@ const MIN_PART_LINES = 20;
 const MIN_PART_REFERENCE = 10;
 /** When the whole is unsure: at least this many parts, and this share of them, must match clearly. */
 const MIN_CLEAR_PARTS = 3;
-const CLEAR_SHARE = 0.5;
+const CLEAR_SHARE = 0.3;
 /** Delays this close together are one delay. */
 const SAME_DELAY_MS = 300;
 /** Longer lines are signs or songs, which don't say when someone speaks. */
