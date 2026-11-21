@@ -32,6 +32,8 @@ const CHANGE_COST = 4;
 const MIN_FIT = 0.5;
 const MIN_LEAD = 0.2;
 const CHANCE_OFFSETS_MS = [-67_000, -41_000, -23_000, 23_000, 41_000, 67_000];
+/** Steps in one direction this many times read as a drift, not as cuts. */
+const MIN_DRIFT_PARTS = 3;
 
 export interface RetimePart {
   /** The first line, by position in the subtitle, the delay applies from. */
@@ -123,8 +125,49 @@ export function planRetime(
     if (plan && (!best || plan.score > best.score)) best = plan;
   }
   if (!best) return null;
+  // Delays that keep stepping one way are a frame rate the list above lacks:
+  // a straight line through them gives that rate, tried as a whole of its own.
+  if (best.parts.length >= MIN_DRIFT_PARTS) {
+    const drift = driftOf(target, best);
+    if (drift) {
+      const plan = planAt(reference, target, drift);
+      if (plan && plan.score >= best.score) best = plan;
+    }
+  }
   const { score: _score, ...plan } = best;
   return plan;
+}
+
+/**
+ * The frame rate and delay a straight line through `plan`'s delays gives,
+ * when they keep moving the same way; null when they go back and forth, as
+ * cuts do.
+ */
+function driftOf(target: Span[], plan: RetimePlan): Alignment | null {
+  const order = plan.parts.map((p) => p.delayMs);
+  const steps = order.slice(1).map((d, i) => d - order[i]);
+  if (!steps.every((s) => s > 0) && !steps.every((s) => s < 0)) return null;
+  let n = 0;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  target.forEach((line, i) => {
+    const x = line.startMs * plan.ratio;
+    const y = plan.delays[i];
+    n++;
+    sx += x;
+    sy += y;
+    sxx += x * x;
+    sxy += x * y;
+  });
+  const spread = n * sxx - sx * sx;
+  if (!n || spread <= 0) return null;
+  const slope = (n * sxy - sx * sy) / spread;
+  const delayMs = Math.round((sy - slope * sx) / n);
+  // A line's new time is s + delay + slope × s for its time s at the plan's
+  // rate, so the rate grows by the slope and one delay remains.
+  return { ratio: plan.ratio * (1 + slope), delayMs, confident: true };
 }
 
 type ScoredPlan = RetimePlan & {

@@ -29,10 +29,18 @@ const AGREE_MS = 300;
 
 const FILM = 24000 / 1001;
 /**
- * Film played at the PAL rate and back, and 24 fps against NTSC's 23.976,
- * which drifts a second every quarter hour.
+ * Film played at the PAL rate and back, from 23.976 or 24 fps, and 24 fps
+ * against NTSC's 23.976, which drifts a second every quarter hour.
  */
-const RATIOS = [1, 25 / FILM, FILM / 25, 1001 / 1000, 1000 / 1001];
+const RATIOS = [
+  1,
+  25 / FILM,
+  FILM / 25,
+  25 / 24,
+  24 / 25,
+  1001 / 1000,
+  1000 / 1001,
+];
 
 /** The speech in `lines`, in order, with overlapping lines joined. */
 function speech(lines: Span[], ratio = 1): Span[] {

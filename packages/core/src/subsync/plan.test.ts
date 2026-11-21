@@ -100,6 +100,41 @@ describe('planRetime', () => {
       assert.ok(Math.abs(d) <= NEAR_MS, `delay ${d}`);
   });
 
+  it('finds an uncommon frame rate from a steady drift', () => {
+    const reference = episode(600, 9);
+    // Runs 0.16% slow, no standard pair of frame rates, and starts 1 s early:
+    // over 50 minutes it drifts about 5 s.
+    const rate = 0.9984;
+    const target = reference.map((l) => ({
+      startMs: l.startMs * rate - 1000,
+      endMs: l.endMs * rate - 1000,
+    }));
+    const plan = planRetime(reference, target);
+    assert.ok(plan);
+    assert.equal(plan.parts.length, 1, JSON.stringify(plan.parts));
+    let near = 0;
+    target.forEach((l, i) => {
+      const at = l.startMs * plan.ratio + plan.delays[i];
+      if (Math.abs(at - reference[i].startMs) <= 150) near++;
+    });
+    assert.ok(
+      near / target.length >= 0.97,
+      `${near} of ${target.length} lines within 150 ms`
+    );
+  });
+
+  it('stretches a subtitle made for 24 fps played at the PAL rate', () => {
+    const reference = episode(500, 10);
+    const target = reference.map((l) => ({
+      startMs: (l.startMs * 24) / 25 + 3000,
+      endMs: (l.endMs * 24) / 25 + 3000,
+    }));
+    const plan = planRetime(reference, target);
+    assert.ok(plan);
+    assert.ok(Math.abs(plan.ratio - 25 / 24) < 1e-6, `ratio ${plan.ratio}`);
+    assert.equal(plan.parts.length, 1, JSON.stringify(plan.parts));
+  });
+
   it('does not stitch together a subtitle whose second half is from elsewhere', () => {
     const reference = episode(400, 8);
     // Half matches the file (2 s late), half is another episode's lines.
