@@ -92,6 +92,11 @@ const synced = () =>
     }
   );
 
+const outcomes = () =>
+  Cache.getInstance<string, SyncOutcome>('subsync-outcome', 4 * MB, 'memory', {
+    sizeOf: () => 96,
+  });
+
 const hash = (text: string) =>
   createHash('sha256').update(text).digest('base64url').slice(0, 32);
 
@@ -249,7 +254,13 @@ export async function syncedSubtitle(
   const original = await fetchSubtitle(link.subtitleUrl);
   // Latin-1 maps every byte to one character, so text in any encoding comes
   // back byte for byte; only the ASCII timestamps are rewritten.
-  const body = await retimeToFile(original.body.toString('latin1'), link);
+  const { body, outcome } = await judgeToFile(
+    original.body.toString('latin1'),
+    link
+  );
+  await outcomes()
+    .set(token, outcome, LINK_TTL_S)
+    .catch(() => undefined);
   if (body === null) return { ...original, synced: false };
   await synced().set(
     token,
@@ -271,10 +282,30 @@ export async function retimeToFile(
   text: string,
   link: SyncLink
 ): Promise<string | null> {
+  return (await judgeToFile(text, link)).body;
+}
+
+/** How a subtitle came out against its file. */
+export type SyncOutcome =
+  /** Moved to match the file. */
+  | 'retimed'
+  /** Already matched it. */
+  | 'in-time'
+  /** Matched no timing clearly, so left as it was. */
+  | 'unmatched'
+  /** A placeholder, or a file whose own subtitle can't be read. */
+  | 'unchecked';
+
+/** `text` against the file `link` names: the retimed text, if any, and how it came out. */
+async function judgeToFile(
+  text: string,
+  link: SyncLink
+): Promise<{ body: string | null; outcome: SyncOutcome }> {
   const timed = readTimes(text);
-  if (!timed || timed.spans.length < MIN_LINES) return null;
+  if (!timed || timed.spans.length < MIN_LINES)
+    return { body: null, outcome: 'unchecked' };
   const reference = await referenceFor(link);
-  if (!reference) return null;
+  if (!reference) return { body: null, outcome: 'unchecked' };
   const why: PlanNote[] = [];
   const plan = planRetime(reference, timed.spans, why);
   if (!plan) {
@@ -282,7 +313,7 @@ export async function retimeToFile(
       { subtitle: link.subtitleUrl, lines: timed.spans.length, why },
       'the subtitle doesn’t match this file'
     );
-    return null;
+    return { body: null, outcome: 'unmatched' };
   }
   // Already in time: moving lines by less than a frame or two changes nothing anyone sees.
   if (
@@ -293,7 +324,7 @@ export async function retimeToFile(
       { subtitle: link.subtitleUrl, fit: plan.fit, chance: plan.chance },
       'the subtitle is already in time with this file'
     );
-    return null;
+    return { body: null, outcome: 'in-time' };
   }
   logger.debug(
     {
@@ -305,5 +336,52 @@ export async function retimeToFile(
     },
     'retimed a subtitle to its file'
   );
-  return applyPlan(timed, plan);
+  return { body: applyPlan(timed, plan), outcome: 'retimed' };
+}
+
+/**
+ * Links whose subtitle is made when asked for, such as a machine translation:
+ * fetching one to check it would start the work and spend its quota.
+ */
+const ON_DEMAND =
+  /\/(?:translate|auto|learn|xsync|xembedded|file-translate|sync-subtitles|auto-subtitles)\//i;
+
+export const madeOnDemand = (url: string) => ON_DEMAND.test(url);
+
+/** How many subtitles are checked at once when a list is asked for. */
+const CHECKS_AT_ONCE = 4;
+
+/**
+ * Checks each subtitle against its file, a few at a time, for at most
+ * `budgetMs`, and gives how each came out. Checks still running when time is
+ * up carry on, so their results are ready when the subtitle is opened.
+ */
+export async function checkSubtitles(
+  items: { token: string; link: SyncLink }[],
+  budgetMs: number
+): Promise<Map<string, SyncOutcome>> {
+  const queue = items.filter((i) => !madeOnDemand(i.link.subtitleUrl));
+  const work = async () => {
+    while (queue.length) {
+      const item = queue.shift()!;
+      if (await outcomes().get(item.token)) continue;
+      await syncedSubtitle(item.token, item.link).catch((error) =>
+        logger.debug(
+          { err: error instanceof Error ? error.message : String(error) },
+          'could not check a subtitle'
+        )
+      );
+    }
+  };
+  const all = Promise.all(Array.from({ length: CHECKS_AT_ONCE }, work));
+  await Promise.race([
+    all,
+    new Promise((resolve) => setTimeout(resolve, budgetMs)),
+  ]);
+  const found = new Map<string, SyncOutcome>();
+  for (const { token } of items) {
+    const outcome = await outcomes().get(token);
+    if (outcome) found.set(token, outcome);
+  }
+  return found;
 }

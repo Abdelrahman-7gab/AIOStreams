@@ -3,12 +3,15 @@ import {
   AIOStreams,
   SubtitleResponse,
   config as appConfig,
+  checkSubtitles,
   createLogger,
   createSyncLink,
   findOffered,
   referenceFor,
   StremioTransformer,
   subtitleSyncEnabled,
+  type Subtitle,
+  type SyncLink,
 } from '@aiostreams/core';
 import { trackResource } from '../../middlewares/analytics.js';
 import { rawExtras } from '../../utils/extras.js';
@@ -69,17 +72,48 @@ async function syncLinks(
   // The same mount this request came in on, variants included.
   const mount = originalUrl.slice(0, originalUrl.indexOf('/subtitles/'));
   const base = appConfig.bootstrap.baseUrl.replace(/\/+$/, '');
-  let warmed = false;
+  const tokens = new Map<Subtitle, string>();
+  const checks: { token: string; link: SyncLink }[] = [];
   for (const subtitle of answer.subtitles) {
     if (!subtitle.url || subtitle.id.startsWith('error.')) continue;
     if (!/^https?:\/\//.test(subtitle.url)) continue;
     const { token, link } = await createSyncLink(subtitle.url, file);
-    if (!warmed) {
-      warmed = true;
-      void referenceFor(link);
-    }
+    if (!checks.length) void referenceFor(link);
+    checks.push({ token, link });
+    tokens.set(subtitle, token);
     subtitle.url = `${base}${mount}/subsync/${token}.${extensionOf(subtitle.url)}`;
   }
+
+  // Players pick the first subtitle in their language, so the ones known to
+  // match the file go first and the ones that matched nothing go last.
+  const outcomes = await checkSubtitles(checks, CHECK_BUDGET_MS);
+  const rank = (subtitle: Subtitle) => {
+    const token = tokens.get(subtitle);
+    const outcome = token ? outcomes.get(token) : undefined;
+    if (outcome === 'retimed' || outcome === 'in-time') return 0;
+    if (outcome === 'unmatched') return 2;
+    return 1;
+  };
+  answer.subtitles = answer.subtitles
+    .map((subtitle, at) => ({ subtitle, at, rank: rank(subtitle) }))
+    .sort((a, b) => a.rank - b.rank || a.at - b.at)
+    .map((s) => s.subtitle);
+}
+
+/** How long a subtitle list waits for its subtitles to be checked. */
+const CHECK_BUDGET_MS = 6000;
+/** Subtitles kept per language, the best matched first. */
+const PER_LANGUAGE = 5;
+
+/** At most `PER_LANGUAGE` subtitles of each language, in the order given. */
+function capPerLanguage(answer: SubtitleResponse) {
+  const seen = new Map<string, number>();
+  answer.subtitles = answer.subtitles.filter((subtitle) => {
+    if (subtitle.id.startsWith('error.')) return true;
+    const count = (seen.get(subtitle.lang) ?? 0) + 1;
+    seen.set(subtitle.lang, count);
+    return count <= PER_LANGUAGE;
+  });
 }
 
 router.use(trackResource('subtitle'));
@@ -126,6 +160,7 @@ router.get(
         ).catch((error) =>
           logger.warn({ error }, 'could not point subtitles at synced links')
         );
+      if (subtitleSyncEnabled()) capPerLanguage(answer);
       res.status(200).json(answer);
     } catch (error) {
       let errorMessage =
