@@ -51,13 +51,49 @@ export async function finalUrl(
       current = new URL(location, current).toString();
       continue;
     }
-    if (res.status >= 400)
+    if (res.status >= 400) {
+      // A bare request, without this server's usual headers, shows whether
+      // something those add is what the file's server refuses.
+      const bare = await plainAnswer(current, timeoutMs);
+      if (bare.status >= 200 && bare.status < 300) return current;
       throw new Error(
-        `${new URL(current).host} answered ${res.status} after ${hop} redirect${hop === 1 ? '' : 's'}`
+        `${new URL(current).host} answered ${res.status} after ${hop} redirect${hop === 1 ? '' : 's'}` +
+          `; asked bare it answered ${bare.status} (${bare.server}): ${bare.text}`
       );
+    }
     return current;
   }
   throw new Error('too many redirects to the file');
+}
+
+/** The status, server and first words of the answer to a request with no extra headers. */
+async function plainAnswer(url: string, timeoutMs: number) {
+  try {
+    const res = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let text = '';
+    if (res.status >= 400) {
+      const { body } = await readBodyUpTo(res, 300);
+      text = body
+        .toString('utf8')
+        .replace(/\s+/g, ' ')
+        .replace(/[A-Za-z0-9_-]{24,}/g, '…')
+        .slice(0, 200);
+    } else res.body?.cancel().catch(() => {});
+    return {
+      status: res.status,
+      server: res.headers.get('server') ?? '?',
+      text,
+    };
+  } catch (error) {
+    return {
+      status: 0,
+      server: '?',
+      text: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /** Reads byte ranges of the file at `url`, which must already be its final address. */
