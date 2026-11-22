@@ -149,7 +149,8 @@ describe('withoutDefaultAudioLanguages', () => {
     withoutDefaultAudioLanguages(
       withDefaultAudioLanguages(stored, defaults, play),
       defaults,
-      play
+      play,
+      stored
     );
 
   it('leaves a user following the default after the app saves what it read', () => {
@@ -223,15 +224,185 @@ describe('withoutDefaultAudioLanguages', () => {
       PlayDefaultAudioTrack: true,
       SubtitleMode: 'Always',
     };
-    assert.deepEqual(withoutDefaultAudioLanguages(stored, []), stored);
+    // Saved back as it was stored: the switch is the user's own.
+    assert.deepEqual(
+      withoutDefaultAudioLanguages(stored, [], true, stored),
+      stored
+    );
     const own = { AudioLanguagePreference: 'hin', AudioLanguages: ['hin'] };
-    assert.deepEqual(withoutDefaultAudioLanguages(own, []), own);
+    assert.deepEqual(withoutDefaultAudioLanguages(own, [], true, own), own);
   });
 
   it('does not change what it is given', () => {
     const filled = withDefaultAudioLanguages(null, ['eng']);
     const copy = structuredClone(filled);
-    withoutDefaultAudioLanguages(filled, ['eng']);
+    const stored = { AudioLanguages: [] as string[], SubtitleMode: 'Always' };
+    const storedCopy = structuredClone(stored);
+    withoutDefaultAudioLanguages(filled, ['eng'], true, stored);
     assert.deepEqual(filled, copy);
+    assert.deepEqual(stored, storedCopy);
+  });
+});
+
+describe('a Jellyfin app reading the configuration, then saving it', () => {
+  // GET /Users/Me: Jellyfin's empty audio settings, under what the server fills in.
+  const read = (
+    stored: Record<string, unknown> | null,
+    defaults: string[],
+    play: boolean
+  ) => ({
+    AudioLanguagePreference: '',
+    AudioLanguages: [] as string[],
+    PlayDefaultAudioTrack: true,
+    ...withDefaultAudioLanguages(stored, defaults, play),
+  });
+  // A stock Jellyfin app knows only the single language, so it never posts the list.
+  const stock = (config: Record<string, unknown>) => {
+    const { AudioLanguages: _list, ...known } = config;
+    return known;
+  };
+  // POST /Users/Configuration: what is stored after the app saved `sent`.
+  const save = (
+    sent: Record<string, unknown>,
+    stored: Record<string, unknown> | null,
+    defaults: string[],
+    play: boolean
+  ) => withoutDefaultAudioLanguages(sent, defaults, play, stored);
+  const prefsAfter = (
+    stored: Record<string, unknown>,
+    defaults: string[],
+    play: boolean
+  ) => trackPreferencesFrom(read(stored, defaults, play));
+
+  describe('a stock app on a default of several languages', () => {
+    const defaults = ['eng', 'jpn'];
+
+    it('saves back the first language and the user keeps following the whole default', () => {
+      const sent = stock(read(null, defaults, true));
+      assert.equal(sent.AudioLanguagePreference, 'eng');
+      const saved = save(sent, null, defaults, true);
+      assert.deepEqual(prefsAfter(saved, defaults, true).audioLanguages, [
+        'eng',
+        'jpn',
+      ]);
+      // The owner changes the default: it reaches this user.
+      assert.deepEqual(prefsAfter(saved, ['fra', 'eng'], true).audioLanguages, [
+        'fra',
+        'eng',
+      ]);
+    });
+
+    it('keeps a different single language the user picked', () => {
+      const sent = {
+        ...stock(read(null, defaults, true)),
+        AudioLanguagePreference: 'fra',
+      };
+      const saved = save(sent, null, defaults, true);
+      assert.deepEqual(prefsAfter(saved, ['deu'], true).audioLanguages, [
+        'fra',
+      ]);
+    });
+
+    it('keeps the whole default, not only its first, when the user turns the switch off', () => {
+      const sent = {
+        ...stock(read(null, defaults, true)),
+        PlayDefaultAudioTrack: false,
+      };
+      const saved = save(sent, null, defaults, true);
+      const prefs = prefsAfter(saved, ['deu'], true);
+      assert.deepEqual(prefs.audioLanguages, ['eng', 'jpn']);
+      assert.equal(prefs.playDefaultAudioTrack, false);
+    });
+
+    it("keeps the user's own list when the app sends back its first language", () => {
+      const stored = {
+        AudioLanguagePreference: 'eng',
+        AudioLanguages: ['eng', 'fra'],
+      };
+      const saved = save(
+        stock(read(stored, defaults, true)),
+        stored,
+        defaults,
+        true
+      );
+      assert.deepEqual(prefsAfter(saved, ['deu'], true).audioLanguages, [
+        'eng',
+        'fra',
+      ]);
+    });
+  });
+
+  describe('a user with their own languages who never set the switch', () => {
+    const stored = { AudioLanguagePreference: 'fra', AudioLanguages: ['fra'] };
+
+    it('follows the switch when the owner turns it on', () => {
+      const saved = save(read(stored, ['eng'], false), stored, ['eng'], false);
+      const prefs = prefsAfter(saved, ['eng'], true);
+      assert.deepEqual(prefs.audioLanguages, ['fra']);
+      assert.equal(prefs.playDefaultAudioTrack, true);
+    });
+
+    it('follows the switch when the owner turns it off', () => {
+      const saved = save(read(stored, ['eng'], true), stored, ['eng'], true);
+      assert.equal(
+        prefsAfter(saved, ['eng'], false).playDefaultAudioTrack,
+        false
+      );
+    });
+
+    it('keeps a switch the user set themselves', () => {
+      const own = { ...stored, PlayDefaultAudioTrack: false };
+      const saved = save(read(own, ['eng'], false), own, ['eng'], false);
+      assert.equal(
+        prefsAfter(saved, ['eng'], true).playDefaultAudioTrack,
+        false
+      );
+      // And one they change now, to what the server does not do.
+      const changed = save(
+        { ...read(stored, ['eng'], false), PlayDefaultAudioTrack: true },
+        stored,
+        ['eng'],
+        false
+      );
+      assert.equal(
+        prefsAfter(changed, ['eng'], false).playDefaultAudioTrack,
+        true
+      );
+    });
+  });
+
+  it('puts a single subtitle language the app sends at the front of the stored list', () => {
+    const stored = {
+      SubtitleLanguagePreference: 'eng',
+      SubtitleLanguages: ['eng', 'ara'],
+    };
+    const saved = save(
+      { SubtitleLanguagePreference: 'ara' },
+      stored,
+      ['eng'],
+      true
+    );
+    assert.deepEqual(saved.SubtitleLanguages, ['ara', 'eng']);
+    assert.equal(saved.SubtitleLanguagePreference, 'ara');
+  });
+
+  describe('a server with no default languages', () => {
+    const stored = { SubtitleMode: 'Always' };
+
+    it('lets a switch the app read back follow the owner', () => {
+      for (const play of [true, false]) {
+        const saved = save(read(stored, [], play), stored, [], play);
+        assert.equal(saved.SubtitleMode, 'Always');
+        assert.equal(prefsAfter(saved, [], !play).playDefaultAudioTrack, !play);
+      }
+    });
+
+    it('keeps a switch the user set themselves', () => {
+      for (const play of [true, false]) {
+        const own = { ...stored, PlayDefaultAudioTrack: play };
+        const saved = save(read(own, [], play), own, [], play);
+        assert.equal(prefsAfter(saved, [], !play).playDefaultAudioTrack, play);
+      }
+    });
   });
 });

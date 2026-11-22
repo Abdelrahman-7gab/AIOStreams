@@ -121,31 +121,6 @@ function userPreferences(body: unknown): Record<string, unknown> {
   );
 }
 
-const LANGUAGE_LISTS = [
-  ['AudioLanguagePreference', 'AudioLanguages'],
-  ['SubtitleLanguagePreference', 'SubtitleLanguages'],
-] as const;
-
-/**
- * Keeps each single language the first of its list. A client that only knows
- * the single one may send back the list it read, so a single language that
- * isn't that list's first is its choice, and goes to the front.
- */
-function withLanguageLists(
-  config: Record<string, unknown>,
-  sent: Record<string, unknown>
-): Record<string, unknown> {
-  for (const [single, list] of LANGUAGE_LISTS) {
-    if (!(single in sent) && !(list in sent)) continue;
-    const languages = (config[list] as string[] | undefined) ?? [];
-    const one = config[single] as string;
-    if (single in sent && one !== (languages[0] ?? ''))
-      config[list] = one ? [one, ...languages.filter((l) => l !== one)] : [];
-    config[single] = (config[list] as string[] | undefined)?.[0] ?? '';
-  }
-  return config;
-}
-
 export async function storedUserConfiguration(scope: WatchScope) {
   const stored = await JellyfinRepository.getUserConfiguration(scope);
   return {
@@ -723,15 +698,15 @@ router.post(
   ['/Users/Configuration', '/Users/:userId/Configuration'],
   jf(async (req, res, ctx) => {
     const stored = await JellyfinRepository.getUserConfiguration(ctx.watch);
-    const sent = userPreferences(req.body);
     await JellyfinRepository.setUserConfiguration(
       ctx.watch,
       // What the app read back from the server's defaults stays unset, so it
       // keeps following them.
       withoutDefaultAudioLanguages(
-        withLanguageLists({ ...userPreferences(stored), ...sent }, sent),
+        userPreferences(req.body),
         appConfig.jellyfin.defaultAudioLanguages,
-        appConfig.jellyfin.playDefaultAudioTrack
+        appConfig.jellyfin.playDefaultAudioTrack,
+        userPreferences(stored)
       )
     );
     res.status(204).end();
