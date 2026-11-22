@@ -40,10 +40,17 @@ function ranked<T extends string>(stored: unknown, all: readonly T[]): T[] {
 /**
  * A user's configuration with the server's audio languages when the user has
  * chosen none, so a file's own default track is only the last resort.
+ *
+ * `playDefaultTrack` is the server's "play the version's default track first".
+ * It only means something next to languages, so a user on the server's
+ * languages takes it whatever their configuration holds (the app saves the
+ * switch along with any other setting); a user with their own languages keeps
+ * their own switch, and takes the server's only when they never set one.
  */
 export function withDefaultAudioLanguages(
   config: Record<string, unknown> | null | undefined,
-  defaults: readonly string[]
+  defaults: readonly string[],
+  playDefaultTrack = true
 ): Record<string, unknown> {
   const own = config ?? {};
   const list = own.AudioLanguages;
@@ -52,12 +59,16 @@ export function withDefaultAudioLanguages(
     (typeof own.AudioLanguagePreference === 'string' &&
       !!own.AudioLanguagePreference);
   const languages = defaults.filter((l) => l);
-  if (chosen || !languages.length) return own;
-  return {
-    ...own,
-    AudioLanguagePreference: languages[0],
-    AudioLanguages: [...languages],
-  };
+  if (!chosen && languages.length)
+    return {
+      ...own,
+      AudioLanguagePreference: languages[0],
+      AudioLanguages: [...languages],
+      PlayDefaultAudioTrack: playDefaultTrack,
+    };
+  if (!playDefaultTrack && typeof own.PlayDefaultAudioTrack !== 'boolean')
+    return { ...own, PlayDefaultAudioTrack: false };
+  return own;
 }
 
 /** A stored configuration, with Jellyfin's defaults for what it leaves out. */

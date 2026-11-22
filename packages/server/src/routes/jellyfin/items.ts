@@ -925,7 +925,8 @@ export async function trackPreferences(
   return trackPreferencesFrom(
     withDefaultAudioLanguages(
       await JellyfinRepository.getUserConfiguration(ctx.watch),
-      appConfig.jellyfin.defaultAudioLanguages
+      appConfig.jellyfin.defaultAudioLanguages,
+      appConfig.jellyfin.playDefaultAudioTrack
     )
   );
 }

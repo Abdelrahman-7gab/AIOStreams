@@ -40,9 +40,41 @@ describe('withDefaultAudioLanguages', () => {
     );
   });
 
+  it("lets the server's languages win over a file's default track when it says so", () => {
+    // The switch only means something next to languages, so a user on the
+    // server's languages takes the server's switch, even the true the app
+    // saves along with any other setting.
+    for (const stored of [
+      null,
+      { AudioLanguages: [], PlayDefaultAudioTrack: true },
+    ]) {
+      const prefs = trackPreferencesFrom(
+        withDefaultAudioLanguages(stored, ['eng'], false)
+      );
+      assert.deepEqual(prefs.audioLanguages, ['eng']);
+      assert.equal(prefs.playDefaultAudioTrack, false);
+    }
+  });
+
+  it('keeps the switch of a user who chose their own languages, and fills it when they never set one', () => {
+    const own = { AudioLanguages: ['hin'], PlayDefaultAudioTrack: true };
+    assert.equal(
+      trackPreferencesFrom(withDefaultAudioLanguages(own, ['eng'], false))
+        .playDefaultAudioTrack,
+      true
+    );
+    const unset = { AudioLanguages: ['hin'] };
+    assert.equal(
+      trackPreferencesFrom(withDefaultAudioLanguages(unset, ['eng'], false))
+        .playDefaultAudioTrack,
+      false
+    );
+  });
+
   it('changes nothing when the server sets no default', () => {
     const stored = { AudioLanguages: [] };
     assert.equal(withDefaultAudioLanguages(stored, []), stored);
+    assert.equal(withDefaultAudioLanguages(stored, [], true), stored);
     assert.deepEqual(
       trackPreferencesFrom(withDefaultAudioLanguages(null, ['']))
         .audioLanguages,

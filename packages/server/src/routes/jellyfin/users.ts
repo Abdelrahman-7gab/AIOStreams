@@ -149,7 +149,8 @@ export async function storedUserConfiguration(scope: WatchScope) {
     ...userPreferences(
       withDefaultAudioLanguages(
         stored,
-        appConfig.jellyfin.defaultAudioLanguages
+        appConfig.jellyfin.defaultAudioLanguages,
+        appConfig.jellyfin.playDefaultAudioTrack
       )
     ),
   };

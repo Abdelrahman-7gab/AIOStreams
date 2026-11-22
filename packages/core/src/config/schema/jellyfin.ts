@@ -164,6 +164,16 @@ export const jellyfinSchema = {
     requiresRestart: false,
     secret: false,
   },
+  playDefaultAudioTrack: {
+    schema: z.boolean(),
+    default: true,
+    label: "Play a version's default audio track first",
+    description:
+      "For users on the default audio languages above, and users who never set it themselves: when on, a track a version marks as its default plays even when another is in one of the user's languages; off lets the languages always win, so a dual audio release whose default track is another language still starts in English.",
+    env: 'JELLYFIN_PLAY_DEFAULT_AUDIO_TRACK',
+    requiresRestart: false,
+    secret: false,
+  },
   resolveOnOpen: {
     schema: z.enum(['always', 'never', 'user']),
     default: 'user',
