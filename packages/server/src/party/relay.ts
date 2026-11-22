@@ -4,6 +4,7 @@ import { createHmac, randomBytes } from 'crypto';
 import proxyaddr from 'proxy-addr';
 import { ipKeyGenerator } from 'express-rate-limit';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
+import { registerWebSocketServer } from '../utils/drain.js';
 import {
   andThen,
   config as appConfig,
@@ -1164,6 +1165,7 @@ export function attachPartyRelay(server: HttpServer): void {
     // Messages are parsed and checked field by field, so bad UTF-8 fails there.
     skipUTF8Validation: true,
   });
+  registerWebSocketServer(wss);
   const conns = new WeakMap<WebSocket, Conn>();
 
   const heartbeat = setInterval(() => {

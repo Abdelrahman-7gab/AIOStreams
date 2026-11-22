@@ -11,7 +11,7 @@ import {
 import { attachPartyRelay, closePartyRelay } from './party/relay.js';
 import { startNfsShare, stopNfsShare } from './nfs.js';
 import { startFuseMount, stopFuseMount } from './fuse.js';
-import { drainServer } from './utils/drain.js';
+import { drainServer, once } from './utils/drain.js';
 import type { Server } from 'node:http';
 
 import {
@@ -480,7 +480,7 @@ async function start() {
   }
 }
 
-async function shutdown() {
+const shutdown = once(async function shutdown() {
   // A rolling update has already moved new requests to the next container;
   // the ones this one is answering finish before anything they use closes.
   const inTime = await drainServer(httpServer, DRAIN_TIMEOUT_MS);
@@ -505,7 +505,7 @@ async function shutdown() {
   RegexAccess.cleanup();
   SelAccess.cleanup();
   await closeDb();
-}
+});
 
 process.on('unhandledRejection', (reason) => {
   logger.fatal({ err: reason }, 'unhandled promise rejection ');
