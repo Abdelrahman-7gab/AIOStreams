@@ -185,6 +185,24 @@ describe('limitPerLanguage', () => {
     assert.equal(kept.length, 5);
   });
 
+  it('shares one cap across spellings of a language (eng, ENG, en, " eng ")', () => {
+    const spellings = ['eng', 'ENG', 'en', ' eng '];
+    const items = Array.from({ length: 12 }, (_, n) => ({
+      lang: spellings[n % spellings.length],
+      n,
+    }));
+    assert.equal(limitPerLanguage(items, 5).length, 5);
+  });
+
+  it('keeps unknown codes apart, trimmed and case-folded', () => {
+    const items = [
+      { lang: 'xx-a' },
+      { lang: ' XX-A ' },
+      { lang: 'xx-b' },
+    ];
+    assert.equal(limitPerLanguage(items, 1).length, 2);
+  });
+
   it('is five per language for the background checks', () => {
     assert.equal(MAX_CHECKED_PER_LANGUAGE, 5);
   });
