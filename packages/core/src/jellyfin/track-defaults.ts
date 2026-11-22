@@ -72,6 +72,47 @@ export function withDefaultAudioLanguages(
 }
 
 /**
+ * A configuration about to be stored, without the audio settings that only
+ * repeat what `withDefaultAudioLanguages` fills in. The apps read a
+ * configuration and save the whole of it back, so without this the server's
+ * default would become each user's own choice the first time they saved any
+ * setting, and a later change of the default would never reach them. What
+ * differs from the fill-in, in the languages or in the switch, is their choice
+ * and is kept whole. A user who picks exactly the default follows it from then.
+ */
+export function withoutDefaultAudioLanguages(
+  config: Record<string, unknown>,
+  defaults: readonly string[],
+  playDefaultTrack = true
+): Record<string, unknown> {
+  const fill = withDefaultAudioLanguages(null, defaults, playDefaultTrack);
+  const list = config.AudioLanguages;
+  const single = config.AudioLanguagePreference;
+  const noLanguages =
+    (list === undefined || (Array.isArray(list) && !list.length)) &&
+    (single === undefined || single === '');
+  const filledList = fill.AudioLanguages as string[] | undefined;
+  const languagesAreFill =
+    !!filledList &&
+    Array.isArray(list) &&
+    list.length === filledList.length &&
+    list.every((l, i) => l === filledList[i]) &&
+    (single === undefined || single === fill.AudioLanguagePreference);
+  const switchIsFill =
+    config.PlayDefaultAudioTrack === undefined ||
+    ('PlayDefaultAudioTrack' in fill &&
+      config.PlayDefaultAudioTrack === fill.PlayDefaultAudioTrack);
+  if (!switchIsFill || !(languagesAreFill || noLanguages)) return config;
+  const rest = { ...config };
+  if (languagesAreFill) {
+    delete rest.AudioLanguages;
+    delete rest.AudioLanguagePreference;
+  }
+  if ('PlayDefaultAudioTrack' in fill) delete rest.PlayDefaultAudioTrack;
+  return rest;
+}
+
+/**
  * A user's track preferences for one title. With `originalOnlyForAnime`,
  * "Original language" counts only for anime: elsewhere it is passed over, so
  * the next language (English, say) plays rather than a film's own language.

@@ -5,6 +5,7 @@ import {
   defaultTrackIndexes,
   trackPreferencesFrom,
   withDefaultAudioLanguages,
+  withoutDefaultAudioLanguages,
 } from './track-defaults.js';
 import type { JellyfinMediaStream } from './types.js';
 
@@ -135,5 +136,102 @@ describe('withDefaultAudioLanguages', () => {
         .audioLanguages,
       []
     );
+  });
+});
+
+describe('withoutDefaultAudioLanguages', () => {
+  // What an app does: read the configuration, then save the whole of it.
+  const roundTrip = (
+    stored: Record<string, unknown> | null,
+    defaults: string[],
+    play = true
+  ) =>
+    withoutDefaultAudioLanguages(
+      withDefaultAudioLanguages(stored, defaults, play),
+      defaults,
+      play
+    );
+
+  it('leaves a user following the default after the app saves what it read', () => {
+    const saved = roundTrip({ SubtitleLanguages: ['ara'] }, ['eng']);
+    assert.deepEqual(saved.SubtitleLanguages, ['ara']);
+    // The owner later changes the default: the user gets the new one.
+    assert.deepEqual(
+      trackPreferencesFrom(withDefaultAudioLanguages(saved, ['eng', 'jpn']))
+        .audioLanguages,
+      ['eng', 'jpn']
+    );
+    // And the switch back to true, then to false.
+    assert.equal(
+      trackPreferencesFrom(withDefaultAudioLanguages(saved, ['eng'], false))
+        .playDefaultAudioTrack,
+      false
+    );
+    // And an empty default leaves them with none.
+    assert.deepEqual(
+      trackPreferencesFrom(withDefaultAudioLanguages(saved, [])).audioLanguages,
+      []
+    );
+  });
+
+  it('follows the default when it was never changed from the false the server filled in', () => {
+    const saved = roundTrip({ AudioLanguages: [] }, ['eng'], false);
+    assert.equal(
+      trackPreferencesFrom(withDefaultAudioLanguages(saved, ['eng'], true))
+        .playDefaultAudioTrack,
+      true
+    );
+  });
+
+  it('keeps languages the user picked, and their switch', () => {
+    const picked = {
+      AudioLanguagePreference: 'hin',
+      AudioLanguages: ['hin', 'eng'],
+      PlayDefaultAudioTrack: false,
+    };
+    assert.deepEqual(
+      withoutDefaultAudioLanguages(picked, ['eng'], true),
+      picked
+    );
+    // Only the order differs from the default: still their choice.
+    const reordered = {
+      AudioLanguagePreference: 'jpn',
+      AudioLanguages: ['jpn', 'eng'],
+    };
+    assert.deepEqual(
+      withoutDefaultAudioLanguages(
+        { ...reordered, PlayDefaultAudioTrack: true },
+        ['eng', 'jpn']
+      ).AudioLanguages,
+      ['jpn', 'eng']
+    );
+  });
+
+  it('keeps the default languages when the user changed the switch with them', () => {
+    const own = {
+      AudioLanguagePreference: 'eng',
+      AudioLanguages: ['eng'],
+      PlayDefaultAudioTrack: false,
+    };
+    assert.deepEqual(withoutDefaultAudioLanguages(own, ['eng'], true), own);
+  });
+
+  it('changes nothing when the server sets no languages', () => {
+    const stored = {
+      AudioLanguagePreference: '',
+      AudioLanguages: [],
+      PlayDefaultAudioTrack: true,
+      SubtitleMode: 'Always',
+    };
+    assert.deepEqual(withoutDefaultAudioLanguages(stored, []), stored);
+    const own = { AudioLanguagePreference: 'hin', AudioLanguages: ['hin'] };
+    assert.deepEqual(withoutDefaultAudioLanguages(own, []), own);
+  });
+
+  it('does not change what it is given', () => {
+    const filled = withDefaultAudioLanguages(null, ['eng']);
+    const copy = structuredClone(filled);
+    withoutDefaultAudioLanguages(filled, ['eng']);
+    assert.deepEqual(filled, copy);
   });
 });

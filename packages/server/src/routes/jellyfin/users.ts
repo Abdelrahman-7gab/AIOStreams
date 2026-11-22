@@ -16,6 +16,7 @@ import {
   msToTicks,
   AUDIO_TYPES,
   withDefaultAudioLanguages,
+  withoutDefaultAudioLanguages,
   pickerAllows,
   pickerUsers,
   userListedFor,
@@ -725,7 +726,13 @@ router.post(
     const sent = userPreferences(req.body);
     await JellyfinRepository.setUserConfiguration(
       ctx.watch,
-      withLanguageLists({ ...userPreferences(stored), ...sent }, sent)
+      // What the app read back from the server's defaults stays unset, so it
+      // keeps following them.
+      withoutDefaultAudioLanguages(
+        withLanguageLists({ ...userPreferences(stored), ...sent }, sent),
+        appConfig.jellyfin.defaultAudioLanguages,
+        appConfig.jellyfin.playDefaultAudioTrack
+      )
     );
     res.status(204).end();
   })
