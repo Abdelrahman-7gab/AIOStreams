@@ -11,6 +11,8 @@ import {
 import { attachPartyRelay, closePartyRelay } from './party/relay.js';
 import { startNfsShare, stopNfsShare } from './nfs.js';
 import { startFuseMount, stopFuseMount } from './fuse.js';
+import { drainServer } from './utils/drain.js';
+import type { Server } from 'node:http';
 
 import {
   Env,
@@ -65,6 +67,11 @@ import {
 } from '@aiostreams/core';
 
 const logger = createLogger('server');
+
+/** Kept for shutdown, which lets its requests finish first. */
+let httpServer: Server | undefined;
+/** How long a stopping server waits for requests in flight; below the platform's stop grace period. */
+const DRAIN_TIMEOUT_MS = 15_000;
 
 async function initialiseDatabase() {
   try {
@@ -463,6 +470,7 @@ async function start() {
       );
       settleMetricsHistory();
     });
+    httpServer = server;
     attachJellyfinWebSocket(server);
     attachPartyRelay(server);
   } catch (error) {
@@ -473,6 +481,11 @@ async function start() {
 }
 
 async function shutdown() {
+  // A rolling update has already moved new requests to the next container;
+  // the ones this one is answering finish before anything they use closes.
+  const inTime = await drainServer(httpServer, DRAIN_TIMEOUT_MS);
+  if (!inTime)
+    logger.warn('Closed connections still open after the drain window');
   TaskManager.stopAll();
   stopMetricsHistory();
   await stopFuseMount().catch(() => undefined);
