@@ -4,19 +4,25 @@ import {
   WatchStateRepository,
   type WatchStateRow,
 } from '../../db/repositories/watch-state.js';
-import { PlaybackHandoffRepository } from '../../db/repositories/playback-handoff.js';
+import {
+  PlaybackHandoffRepository,
+  type SinkRow,
+} from '../../db/repositories/playback-handoff.js';
 import {
   dispatchBulkMark,
   dispatchListChange,
   dispatchPlayback,
-  ensurePlaybackSink,
+  type DispatchOptions,
 } from './dispatch.js';
 import {
+  catchUpHalt,
   catchUpRoom,
   catchUpSteps,
   planCatchUp,
   sendCatchUp,
+  type CatchUpResult,
   type CatchUpStep,
+  type CatchUpStop,
 } from './catchup-plan.js';
 import type { ResolvedPlaybackSink } from './resolve.js';
 import type { WatchScope } from '../types.js';
@@ -39,13 +45,32 @@ const sleep = (ms: number) =>
 /** Sinks whose catch-up is running here, so two paths noticing it at once send it once. */
 const running = new Set<string>();
 
-/** Replays this history's own plays, marks and favourites to one tracker. */
+const STOPPED: Record<CatchUpStop, string> = {
+  queue: 'stopped catching a tracker up: its delivery queue did not drain',
+  removed: 'stopped catching a tracker up: its addon was removed',
+  retired: 'stopped catching a tracker up: its addon is no longer in use',
+  'writes-off': 'stopped catching a tracker up: it no longer takes writes',
+  reconfigured:
+    'stopped catching a tracker up: its addon was saved again with another address or routing',
+};
+
+/**
+ * Replays this history's own plays, marks and favourites to one tracker:
+ * `sink` as it was when `row` was written from it.
+ *
+ * It can run for a long time (it waits on a full queue), so it re-reads the
+ * row before every step and stops once the addon was saved again, retired,
+ * removed or switched to take no writes. It never writes the row: putting the
+ * routing it captured back would undo the newer one, revive a retired sink and
+ * post to the old address. Answers what it did, or null when it did not run.
+ */
 export async function catchUpSink(
   scope: WatchScope,
-  sink: ResolvedPlaybackSink
-): Promise<void> {
+  sink: ResolvedPlaybackSink,
+  row: SinkRow
+): Promise<CatchUpResult | null> {
   const key = `${scope.uuid}|${scope.persona}|${sink.instanceId}`;
-  if (running.has(key)) return;
+  if (running.has(key)) return null;
   running.add(key);
   try {
     const rows: WatchStateRow[] = [];
@@ -63,18 +88,25 @@ export async function catchUpSink(
     }
     const plan = planCatchUp(rows);
     const sinks = [sink];
-    const row = await ensurePlaybackSink(scope, sink);
+    /** The row as last read, unchanged since the catch-up started. */
+    let current = row;
+    const options: DispatchOptions = {
+      sinkRow: async () => current,
+      // Its own keys: a later catch-up of this sink is never deduplicated
+      // against this one's rows.
+      replay: `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    };
     const { limit, chunk } = catchUpRoom(
       appConfig.watchState.deliveryMaxPendingPerSink
     );
     const send = async (step: CatchUpStep) => {
       switch (step.kind) {
         case 'show':
-          return dispatchBulkMark(scope, sinks, step.mark);
+          return dispatchBulkMark(scope, sinks, step.mark, options);
         case 'favourite':
-          return dispatchListChange(scope, sinks, step.change);
+          return dispatchListChange(scope, sinks, step.change, options);
         default:
-          return dispatchPlayback(scope, sinks, step.event);
+          return dispatchPlayback(scope, sinks, step.event, options);
       }
     };
     const result = await sendCatchUp(
@@ -85,6 +117,12 @@ export async function catchUpSink(
         pollMs: POLL_MS,
         timeoutMs: WAIT_TIMEOUT_MS,
         pending: () => PlaybackHandoffRepository.countPending(row.id),
+        halted: async () => {
+          const fresh = await PlaybackHandoffRepository.getSink(row.id);
+          const halt = catchUpHalt(row, fresh);
+          if (!halt && fresh) current = fresh;
+          return halt;
+        },
         sleep,
         now: Date.now,
       }
@@ -100,16 +138,14 @@ export async function catchUpSink(
     };
     if (result.stopped) {
       // Not retried: the tracker only catches up again on its next transition.
-      logger.warn(
-        summary,
-        'stopped catching a tracker up: its delivery queue did not drain'
-      );
+      logger.warn(summary, STOPPED[result.stopped]);
     } else {
       logger.info(
         summary,
         'sent this history to a tracker that started accepting it'
       );
     }
+    return result;
   } catch (error) {
     logger.warn(
       {
@@ -118,6 +154,7 @@ export async function catchUpSink(
       },
       'could not catch a tracker up with this history'
     );
+    return null;
   } finally {
     running.delete(key);
   }

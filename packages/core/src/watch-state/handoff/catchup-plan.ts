@@ -48,14 +48,57 @@ export function startsWriting(
   );
 }
 
+/**
+ * Why a catch-up stopped before its last step: its queue did not drain in
+ * time, or the sink row is no longer the one it started replaying to.
+ */
+export type CatchUpStop =
+  'queue' | 'removed' | 'retired' | 'writes-off' | 'reconfigured';
+
+/** The parts of a sink row a catch-up checks before each step. */
+export interface CatchUpSinkState {
+  baseUrl: string;
+  query: string;
+  routingHash: string | null;
+  events: readonly string[];
+  retiredAt: number | null;
+}
+
+/**
+ * Whether a catch-up must stop because its sink row changed under it: the
+ * addon was removed, retired, switched to take no writes, or saved again with
+ * another address or routing (a Watch Sync re-save seals a new path, which may
+ * hold another account). The catch-up then stops instead of carrying on with
+ * the configuration it captured, which would post to the old address.
+ */
+export function catchUpHalt(
+  started: CatchUpSinkState,
+  now: CatchUpSinkState | null
+): CatchUpStop | null {
+  if (!now) return 'removed';
+  if (now.retiredAt != null) return 'retired';
+  if (!acceptsWrites(now.events)) return 'writes-off';
+  if (
+    now.baseUrl !== started.baseUrl ||
+    now.query !== started.query ||
+    now.routingHash !== started.routingHash
+  )
+    return 'reconfigured';
+  return null;
+}
+
+/** Episodes per queue row of a bulk mark. */
+export const BULK_PART_SIZE = 500;
+
 export interface CatchUpPlan {
   /** Resume points, sent as pauses at their position. */
   resumes: PlaybackEventInput[];
   /** Watched films, one mark each. */
   watched: PlaybackEventInput[];
   /**
-   * Watched episodes, one mark per show, dated by the latest of its episodes:
-   * a mark carries one date.
+   * Watched episodes, one mark per show. Each episode keeps its own date, for
+   * a tracker sent one event per episode; the mark is dated by the latest of
+   * them, as a bulk body carries one date.
    */
   shows: BulkMarkInput[];
   favourites: ListChangeInput[];
@@ -109,6 +152,7 @@ export function planCatchUp(rows: readonly WatchStateRow[]): CatchUpPlan {
           season: row.season ?? null,
           episode: row.episode ?? null,
           itemKey: row.itemKey,
+          at,
         });
       } else {
         plan.watched.push({
@@ -144,9 +188,9 @@ export function planCatchUp(rows: readonly WatchStateRow[]): CatchUpPlan {
 
 /** One dispatch of a catch-up, and how many rows it may add to the queue at most. */
 export type CatchUpStep =
-  | { kind: 'show'; mark: BulkMarkInput; size: number }
-  | { kind: 'film' | 'resume'; event: PlaybackEventInput; size: number }
-  | { kind: 'favourite'; change: ListChangeInput; size: number };
+  | { kind: 'show'; mark: BulkMarkInput; rows: number }
+  | { kind: 'film' | 'resume'; event: PlaybackEventInput; rows: number }
+  | { kind: 'favourite'; change: ListChangeInput; rows: number };
 
 /**
  * The order a catch-up is queued in: shows, films, favourites, resume points.
@@ -155,7 +199,8 @@ export type CatchUpStep =
  * marks, so the resume points, which nothing else would carry again, go last.
  * A tracker without `bulk` takes one event per episode, so its shows are split
  * into `chunk`s the throttle can pace; a `bulk` tracker gets each show whole,
- * as its parts are keyed by their index and split marks would collide.
+ * as its parts are keyed by their index and split marks would collide. A bulk
+ * show queues one row per {@link BULK_PART_SIZE} episodes.
  */
 export function catchUpSteps(
   plan: CatchUpPlan,
@@ -164,8 +209,13 @@ export function catchUpSteps(
   const steps: CatchUpStep[] = [];
   const chunk = Math.max(1, sink.chunk);
   for (const mark of plan.shows) {
-    if (sink.bulk || mark.videos.length <= chunk) {
-      steps.push({ kind: 'show', mark, size: mark.videos.length });
+    if (sink.bulk) {
+      const rows = Math.ceil(mark.videos.length / BULK_PART_SIZE);
+      steps.push({ kind: 'show', mark, rows });
+      continue;
+    }
+    if (mark.videos.length <= chunk) {
+      steps.push({ kind: 'show', mark, rows: mark.videos.length });
       continue;
     }
     for (let i = 0; i < mark.videos.length; i += chunk) {
@@ -173,16 +223,16 @@ export function catchUpSteps(
       steps.push({
         kind: 'show',
         mark: { ...mark, videos },
-        size: videos.length,
+        rows: videos.length,
       });
     }
   }
   for (const event of plan.watched)
-    steps.push({ kind: 'film', event, size: 1 });
+    steps.push({ kind: 'film', event, rows: 1 });
   for (const change of plan.favourites)
-    steps.push({ kind: 'favourite', change, size: 1 });
+    steps.push({ kind: 'favourite', change, rows: 1 });
   for (const event of plan.resumes)
-    steps.push({ kind: 'resume', event, size: 1 });
+    steps.push({ kind: 'resume', event, rows: 1 });
   return steps;
 }
 
@@ -207,61 +257,81 @@ export interface QueueRoom {
   timeoutMs: number;
   /** The sink's pending rows, counted. */
   pending: () => Promise<number>;
+  /**
+   * Why the catch-up must stop now, from a fresh read of the sink row
+   * ({@link catchUpHalt}); null to carry on. Asked before every step and
+   * after every wait's poll, since a wait can last minutes.
+   */
+  halted: () => Promise<CatchUpStop | null>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
 
+/** What a catch-up did, in queue rows (one per event, one per bulk part). */
 export interface CatchUpResult {
-  /** Events handed to dispatch (an upper bound on rows queued). */
-  sent: number;
-  /** Events whose dispatch threw. */
+  /** Rows added to the sink's queue, as the queue counted them. */
+  queued: number;
+  /**
+   * Rows the sent steps could have added but did not: the tracker does not
+   * take that event or title, a row with the same key was already queued, the
+   * sink was in its error backoff, or the dispatch failed.
+   */
   skipped: number;
-  /** Events never sent because the catch-up stopped. */
+  /** Rows of the steps never sent because the catch-up stopped. */
   unsent: number;
-  /** The queue did not drain in time, so the catch-up stopped. */
-  stopped: boolean;
+  /** Why the catch-up stopped before its last step; null when it finished. */
+  stopped: CatchUpStop | null;
 }
 
 /**
  * Sends the steps in order, waiting while the sink's queue is above
  * `room.limit` so the catch-up never pushes it past the cap, where the oldest
  * rows, live pings included, would be dropped. The queue is counted again only
- * when the running estimate says the next step could cross the limit.
+ * when the running estimate says the next step could cross the limit. `send`
+ * answers how many rows it queued. The catch-up stops as soon as
+ * `room.halted` says the sink changed under it.
  */
 export async function sendCatchUp(
   steps: readonly CatchUpStep[],
-  send: (step: CatchUpStep) => Promise<void>,
+  send: (step: CatchUpStep) => Promise<number>,
   room: QueueRoom
 ): Promise<CatchUpResult> {
   const result: CatchUpResult = {
-    sent: 0,
+    queued: 0,
     skipped: 0,
     unsent: 0,
-    stopped: false,
+    stopped: null,
+  };
+  const stop = (reason: CatchUpStop, from: number) => {
+    result.stopped = reason;
+    for (const rest of steps.slice(from)) result.unsent += rest.rows;
+    return result;
   };
   let estimate: number | null = null;
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
-    if (estimate === null || estimate + step.size > room.limit) {
+    if (estimate === null || estimate + step.rows > room.limit) {
       const deadline = room.now() + room.timeoutMs;
       estimate = await room.pending();
       while (estimate > room.limit) {
-        if (room.now() >= deadline) {
-          result.stopped = true;
-          for (const rest of steps.slice(i)) result.unsent += rest.size;
-          return result;
-        }
+        if (room.now() >= deadline) return stop('queue', i);
         await room.sleep(room.pollMs);
+        const halt = await room.halted();
+        if (halt) return stop(halt, i);
         estimate = await room.pending();
       }
     }
+    const halt = await room.halted();
+    if (halt) return stop(halt, i);
+    let queued = 0;
     try {
-      await send(step);
-      result.sent += step.size;
+      queued = Math.min(step.rows, Math.max(0, await send(step)));
     } catch {
-      result.skipped += step.size;
+      // Counted below as skipped: a failed dispatch queued nothing.
     }
-    estimate += step.size;
+    result.queued += queued;
+    result.skipped += step.rows - queued;
+    estimate += queued;
   }
   return result;
 }

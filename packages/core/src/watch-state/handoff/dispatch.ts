@@ -11,7 +11,7 @@ import { IdParser, type IdType } from '../../utils/id-parser.js';
 import { sinkProbeMs } from './deliver.js';
 import { pullUrlFor, pushUrlFor, uniqueByAddress } from './resolve.js';
 import { catchUpSink } from './catchup.js';
-import { startsWriting } from './catchup-plan.js';
+import { BULK_PART_SIZE, startsWriting } from './catchup-plan.js';
 import {
   DROP_EVENTS,
   PLAYBACK_EVENTS,
@@ -235,7 +235,7 @@ export async function ensurePlaybackSink(
   remember(key, row, now);
   void touchActive(row, now);
   if (catchUp && appConfig.watchState.reportEnabled)
-    void catchUpSink(scope, sink);
+    void catchUpSink(scope, sink, row);
   return row;
 }
 
@@ -324,7 +324,23 @@ async function enforcePendingCap(
 const SINGLE_LANE = 0;
 const BULK_LANE = 1;
 
-const BULK_PART_SIZE = 500;
+/**
+ * How a catch-up dispatches, where a live event passes nothing.
+ *
+ * `sinkRow` hands back the sink's row in place of `ensurePlaybackSink`, which
+ * would write the routing the catch-up captured back to the row (reviving it
+ * if retired) once the addon was saved again; null skips the sink. `replay`
+ * names the run in every key, so a later catch-up of the same sink is not
+ * deduplicated against an earlier one's rows, kept for days once finished.
+ */
+export interface DispatchOptions {
+  sinkRow?: (sink: ResolvedPlaybackSink) => Promise<SinkRow | null>;
+  replay?: string;
+}
+
+function keyFor(key: string, options: DispatchOptions | undefined): string {
+  return options?.replay ? `${key}|${options.replay}` : key;
+}
 
 /**
  * A mark is the final word on an item, a transition supersedes the transitions
@@ -360,9 +376,10 @@ function singleEvent(
   event: PlaybackEventInput,
   at: number,
   ids: Record<string, string>,
-  priority: number
+  priority: number,
+  options?: DispatchOptions
 ): QueuedEvent {
-  const idempotencyKey = idempotencyKeyFor(event, at);
+  const idempotencyKey = keyFor(idempotencyKeyFor(event, at), options);
   const scope = event.itemKey.startsWith('e|')
     ? 'episode'
     : event.itemKey.startsWith('m|')
@@ -392,17 +409,23 @@ function singleEvent(
   };
 }
 
+/** Answers how many rows were queued, over all sinks. */
 async function queueToSinks(
   scope: WatchScope,
   sinks: ResolvedPlaybackSink[],
   kind: PlaybackEventKind,
   matches: (sink: ResolvedPlaybackSink) => boolean,
-  build: (sink: ResolvedPlaybackSink) => Promise<QueuedEvent[]>
-): Promise<void> {
+  build: (sink: ResolvedPlaybackSink) => Promise<QueuedEvent[]>,
+  options?: DispatchOptions
+): Promise<number> {
+  let queued = 0;
   for (const sink of uniqueByAddress(sinks)) {
     if (!matches(sink)) continue;
     try {
-      const row = await ensurePlaybackSink(scope, sink);
+      const row = options?.sinkRow
+        ? await options.sinkRow(sink)
+        : await ensurePlaybackSink(scope, sink);
+      if (!row) continue;
       /*
        * auth_expired keeps queuing; a failing sink only past its probe window.
        * Measured from `status_at`: `updated_at` moves whenever the row is
@@ -415,6 +438,7 @@ async function queueToSinks(
         row.id,
         await build(sink)
       );
+      queued += added;
       if (added) await enforcePendingCap(row.id, sink.name, added);
     } catch (error) {
       logger.warn(
@@ -427,14 +451,17 @@ async function queueToSinks(
       );
     }
   }
+  return queued;
 }
 
+/** Answers how many rows were queued. */
 export async function dispatchPlayback(
   scope: WatchScope,
   sinks: ResolvedPlaybackSink[],
-  event: PlaybackEventInput
-): Promise<void> {
-  if (!appConfig.watchState.reportEnabled || !sinks.length) return;
+  event: PlaybackEventInput,
+  options?: DispatchOptions
+): Promise<number> {
+  if (!appConfig.watchState.reportEnabled || !sinks.length) return 0;
 
   const at = event.at ?? Date.now();
   const ids = await fillAnimeIds(
@@ -443,13 +470,14 @@ export async function dispatchPlayback(
     event.episode
   );
 
-  await queueToSinks(
+  return queueToSinks(
     scope,
     sinks,
     event.kind,
     (sink) =>
       matchesSink(sink, event.kind, event.type, [event.videoId, event.baseId]),
-    async (sink) => [singleEvent(sink, event, at, ids, SINGLE_LANE)]
+    async (sink) => [singleEvent(sink, event, at, ids, SINGLE_LANE, options)],
+    options
   );
 }
 
@@ -466,6 +494,11 @@ export interface BulkMarkInput {
     season: number | null;
     episode: number | null;
     itemKey: string;
+    /**
+     * When this episode was watched, for a tracker sent one event per
+     * episode; the mark's `at` when absent. A bulk body carries only `at`.
+     */
+    at?: number;
   }[];
   providerIds?: Record<string, string>;
   /**
@@ -476,14 +509,18 @@ export interface BulkMarkInput {
   at?: number;
 }
 
-/** An addon that declares `bulk` gets the mark in parts; any other gets one event per video. */
+/**
+ * An addon that declares `bulk` gets the mark in parts; any other gets one
+ * event per video. Answers how many rows were queued.
+ */
 export async function dispatchBulkMark(
   scope: WatchScope,
   sinks: ResolvedPlaybackSink[],
-  mark: BulkMarkInput
-): Promise<void> {
-  if (!appConfig.watchState.reportEnabled) return;
-  if (!sinks.length || !mark.videos.length) return;
+  mark: BulkMarkInput,
+  options?: DispatchOptions
+): Promise<number> {
+  if (!appConfig.watchState.reportEnabled) return 0;
+  if (!sinks.length || !mark.videos.length) return 0;
 
   const at = mark.at ?? Date.now();
   const ids = await fillAnimeIds(externalIds(mark.providerIds));
@@ -491,7 +528,7 @@ export async function dispatchBulkMark(
   const target =
     mark.season == null ? mark.metaId : `${mark.metaId}:${mark.season}`;
 
-  await queueToSinks(
+  return queueToSinks(
     scope,
     sinks,
     mark.kind,
@@ -516,7 +553,9 @@ export async function dispatchBulkMark(
             video.season,
             video.episode
           );
-          events.push(singleEvent(sink, event, at, own, BULK_LANE));
+          events.push(
+            singleEvent(sink, event, video.at ?? at, own, BULK_LANE, options)
+          );
         }
         return events;
       }
@@ -525,7 +564,10 @@ export async function dispatchBulkMark(
       for (let i = 0; i < mark.videos.length; i += BULK_PART_SIZE)
         parts.push(mark.videos.slice(i, i + BULK_PART_SIZE));
       return parts.map((videos, i) => {
-        const idempotencyKey = `b|${target}|${mark.kind}|${at}|${i + 1}`;
+        const idempotencyKey = keyFor(
+          `b|${target}|${mark.kind}|${at}|${i + 1}`,
+          options
+        );
         return {
           idempotencyKey,
           event: mark.kind,
@@ -552,7 +594,8 @@ export async function dispatchBulkMark(
           replaces: PLAYBACK_EVENTS,
         };
       });
-    }
+    },
+    options
   );
 }
 
@@ -565,18 +608,23 @@ export interface ListChangeInput {
   providerIds?: Record<string, string>;
 }
 
+/** Answers how many rows were queued. */
 export async function dispatchListChange(
   scope: WatchScope,
   sinks: ResolvedPlaybackSink[],
-  change: ListChangeInput
-): Promise<void> {
-  if (!appConfig.watchState.reportEnabled || !sinks.length) return;
+  change: ListChangeInput,
+  options?: DispatchOptions
+): Promise<number> {
+  if (!appConfig.watchState.reportEnabled || !sinks.length) return 0;
 
   const at = Date.now();
   const ids = await fillAnimeIds(externalIds(change.providerIds));
-  const idempotencyKey = `w|${change.itemKey}|${change.kind}|${at}`;
+  const idempotencyKey = keyFor(
+    `w|${change.itemKey}|${change.kind}|${at}`,
+    options
+  );
 
-  await queueToSinks(
+  return queueToSinks(
     scope,
     sinks,
     change.kind,
@@ -598,7 +646,8 @@ export async function dispatchListChange(
         priority: SINGLE_LANE,
         replaces: replacesFor(change.kind),
       },
-    ]
+    ],
+    options
   );
 }
 
