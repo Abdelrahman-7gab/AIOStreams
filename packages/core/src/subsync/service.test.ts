@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   checkedAhead,
   isNotice,
+  limitPerLanguage,
+  MAX_CHECKED_PER_LANGUAGE,
   madeOnDemand,
   noteNotice,
   outcomeTtl,
@@ -153,5 +155,37 @@ describe('outcomeTtl', () => {
   it('keeps what a check found for a day', () => {
     for (const outcome of ['retimed', 'in-time', 'unmatched'] as const)
       assert.equal(outcomeTtl(outcome), 24 * 3600, outcome);
+  });
+});
+
+describe('limitPerLanguage', () => {
+  const item = (lang: string, n: number) => ({ lang, n });
+
+  it('keeps the first N of each language, in order, and drops the rest', () => {
+    const items = [
+      ...Array.from({ length: 8 }, (_, i) => item('ara', i)),
+      ...Array.from({ length: 7 }, (_, i) => item('eng', i)),
+      item('fra', 0),
+    ];
+    const kept = limitPerLanguage(items, 5);
+    assert.equal(kept.filter((i) => i.lang === 'ara').length, 5);
+    assert.deepEqual(
+      kept.filter((i) => i.lang === 'eng').map((i) => i.n),
+      [0, 1, 2, 3, 4]
+    );
+    assert.equal(kept.filter((i) => i.lang === 'fra').length, 1);
+    assert.equal(items.length, 16, 'the list itself is not changed');
+  });
+
+  it('counts a subtitle without a language as one group', () => {
+    const kept = limitPerLanguage(
+      Array.from({ length: 9 }, (_, n) => ({ n })),
+      5
+    );
+    assert.equal(kept.length, 5);
+  });
+
+  it('is five per language for the background checks', () => {
+    assert.equal(MAX_CHECKED_PER_LANGUAGE, 5);
   });
 });

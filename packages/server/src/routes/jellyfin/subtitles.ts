@@ -13,6 +13,7 @@ import {
 } from '@aiostreams/core';
 import { jfOptional, param } from './context.js';
 import { ensureMemo, locate, pickSource } from './playback.js';
+import { withinBudget } from './retimeBudget.js';
 
 const logger = createLogger('jellyfin');
 const router: Router = Router({ mergeParams: true });
@@ -25,6 +26,12 @@ const BODY_TTL = 3600;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_CACHED_BYTES = 512 * 1024;
+/**
+ * How long a request waits for the file's timings. The first look at a file can
+ * take minutes on a slow CDN, past a player's own timeout; past this the
+ * original subtitle is served and the read carries on for the next request.
+ */
+const RETIME_BUDGET_MS = 4000;
 
 function formatOf(raw: string): SubtitleFormat {
   const f = raw.toLowerCase();
@@ -105,21 +112,29 @@ async function subtitleHandler(req: Request, res: Response) {
       res.status(502).end();
       return;
     }
-    const retimed = sync
-      ? await retimeToFile(fetched.raw, sync.link).catch((error) => {
+    let retimed: string | null = null;
+    let timedOut = false;
+    if (sync) {
+      const work = retimeToFile(fetched.raw, sync.link)
+        .then((body) => ({ body }))
+        .catch((error) => {
           logger.debug(
             { err: error instanceof Error ? error.message : String(error) },
             'could not retime a subtitle to its file'
           );
-          return null;
-        })
-      : null;
+          return { body: null };
+        });
+      const done = await withinBudget(work, RETIME_BUDGET_MS);
+      if (done) retimed = done.body;
+      else timedOut = true;
+    }
     converted = convertSubtitle(
       retimed ?? fetched.raw,
       subtitleExtensionOf(track.url),
       to
     );
-    cacheable = fetched.cacheable;
+    // The original, served only because the file's timings were slow, is not kept.
+    cacheable = fetched.cacheable && !timedOut;
     if (
       cacheable &&
       Buffer.byteLength(converted.body, 'utf8') <= MAX_CACHED_BYTES

@@ -73,13 +73,13 @@ async function syncLinks(
   const mount = originalUrl.slice(0, originalUrl.indexOf('/subtitles/'));
   const base = appConfig.bootstrap.baseUrl.replace(/\/+$/, '');
   const tokens = new Map<Subtitle, string>();
-  const checks: { token: string; link: SyncLink }[] = [];
+  const checks: { token: string; link: SyncLink; lang?: string }[] = [];
   for (const subtitle of answer.subtitles) {
     if (!subtitle.url || subtitle.id.startsWith('error.')) continue;
     if (!/^https?:\/\//.test(subtitle.url)) continue;
     const { token, link } = await createSyncLink(subtitle.url, file);
     if (!checks.length) void referenceFor(link);
-    checks.push({ token, link });
+    checks.push({ token, link, lang: subtitle.lang });
     tokens.set(subtitle, token);
     subtitle.url = `${base}${mount}/subsync/${token}.${extensionOf(subtitle.url)}`;
   }

@@ -120,8 +120,14 @@ const TEXT_CODECS = [
 ];
 /* eslint-enable lingui/no-unlocalized-strings */
 
+/** The most a compressed block or codec private data may inflate to; a few KB is usual. */
+const MAX_INFLATED_BYTES = 4 << 20;
+
 async function inflate(bytes: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(inflateSync(bytes));
+  // Throws past the cap, so a zip bomb in a file is not inflated into memory.
+  return new Uint8Array(
+    inflateSync(bytes, { maxOutputLength: MAX_INFLATED_BYTES })
+  );
 }
 
 export async function decoded(
@@ -220,7 +226,8 @@ async function readTracks(bytes: Uint8Array): Promise<MkvSubtitle[]> {
       try {
         header = text(await decoded(codecPrivate, encoding ?? undefined, 2));
       } catch {
-        kind = null;
+        // Unreadable or oversized: the private data is taken as absent.
+        header = '';
       }
     }
     const tag = bcp47 ?? language;
