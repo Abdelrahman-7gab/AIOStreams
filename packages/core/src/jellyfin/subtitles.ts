@@ -119,6 +119,39 @@ interface Cue {
   startMs: number;
   endMs: number;
   text: string;
+  /** Where the line sits, as ASS's numpad `\anN`: 8 is top centre. */
+  an?: number;
+}
+
+/**
+ * A line without its ASS override blocks (`{\an8}`, `{\i1}`…), which SRT files
+ * ripped from ASS keep and WebVTT players print as text. The first `\anN` is
+ * kept as the line's position; `all` also drops `{comments}`, as ASS does.
+ */
+function takeOverrides(
+  text: string,
+  all = false
+): { text: string; an?: number } {
+  let an: number | undefined;
+  const clean = text.replace(all ? /\{[^}]*\}/g : /\{\\[^}]*\}/g, (block) => {
+    const m = /\\an([1-9])/.exec(block);
+    if (m && an === undefined) an = Number(m[1]);
+    return '';
+  });
+  return an === undefined ? { text: clean } : { text: clean, an };
+}
+
+/** WebVTT cue settings for a numpad position; bottom centre needs none. */
+function vttSettings(an: number | undefined): string {
+  if (!an) return '';
+  const row = Math.ceil(an / 3); // 1 bottom, 2 middle, 3 top
+  const column = (an - 1) % 3; // 0 left, 1 centre, 2 right
+  const settings: string[] = [];
+  if (row === 3) settings.push('line:0');
+  else if (row === 2) settings.push('line:50%');
+  if (column === 0) settings.push('align:start');
+  else if (column === 2) settings.push('align:end');
+  return settings.length ? ` ${settings.join(' ')}` : '';
 }
 
 /** Parses SRT or VTT into cues; ignores headers, NOTE/STYLE blocks and ids. */
@@ -136,7 +169,11 @@ export function parseCues(input: string): Cue[] {
     const startMs = timeToMs(start);
     const endMs = timeToMs(end.split(' ')[0] === '' ? end.trim() : end);
     if (startMs === null || endMs === null) continue;
-    cues.push({ startMs, endMs, text: lines.slice(arrow + 1).join('\n') });
+    cues.push({
+      startMs,
+      endMs,
+      ...takeOverrides(lines.slice(arrow + 1).join('\n')),
+    });
   }
   return cues;
 }
@@ -163,13 +200,12 @@ export function parseAssCues(input: string): Cue[] {
     const startMs = timeToMs(parts[1] ?? '');
     const endMs = timeToMs(parts[2] ?? '');
     if (startMs === null || endMs === null) continue;
-    const body = parts
-      .slice(textIndex)
-      .join(',')
-      .replace(/\{[^}]*\}/g, '')
-      .replace(/\\[Nnh]/g, '\n')
-      .trim();
-    if (body) cues.push({ startMs, endMs, text: body });
+    const { text: said, an } = takeOverrides(
+      parts.slice(textIndex).join(','),
+      true
+    );
+    const body = said.replace(/\\[Nnh]/g, '\n').trim();
+    if (body) cues.push({ startMs, endMs, text: body, ...(an && { an }) });
   }
   return cues.sort((a, b) => a.startMs - b.startMs);
 }
@@ -189,7 +225,7 @@ export function cuesToVtt(cues: Cue[]): string {
   const body = cues
     .map(
       (c, i) =>
-        `${i + 1}\n${msToVtt(c.startMs)} --> ${msToVtt(c.endMs)}\n${c.text}`
+        `${i + 1}\n${msToVtt(c.startMs)} --> ${msToVtt(c.endMs)}${vttSettings(c.an)}\n${c.text}`
     )
     .join('\n\n');
   return `WEBVTT\n\n${body}\n`;
@@ -200,7 +236,7 @@ export function cuesToSrt(cues: Cue[]): string {
     cues
       .map(
         (c, i) =>
-          `${i + 1}\n${msToVtt(c.startMs).replace('.', ',')} --> ${msToVtt(c.endMs).replace('.', ',')}\n${c.text}`
+          `${i + 1}\n${msToVtt(c.startMs).replace('.', ',')} --> ${msToVtt(c.endMs).replace('.', ',')}\n${c.an && c.an !== 2 ? `{\\an${c.an}}` : ''}${c.text}`
       )
       .join('\n\n') + '\n'
   );
