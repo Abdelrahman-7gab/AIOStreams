@@ -468,6 +468,12 @@ export interface BulkMarkInput {
     itemKey: string;
   }[];
   providerIds?: Record<string, string>;
+  /**
+   * When the mark was made, in milliseconds like `PlaybackEventInput.at`
+   * (the body sends seconds). A catch-up replaying history sets it; a live
+   * mark leaves it out and is dated now.
+   */
+  at?: number;
 }
 
 /** An addon that declares `bulk` gets the mark in parts; any other gets one event per video. */
@@ -479,7 +485,7 @@ export async function dispatchBulkMark(
   if (!appConfig.watchState.reportEnabled) return;
   if (!sinks.length || !mark.videos.length) return;
 
-  const at = Date.now();
+  const at = mark.at ?? Date.now();
   const ids = await fillAnimeIds(externalIds(mark.providerIds));
   const videoIds = mark.videos.map((v) => v.videoId);
   const target =
