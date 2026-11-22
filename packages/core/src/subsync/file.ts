@@ -226,8 +226,8 @@ async function readTracks(bytes: Uint8Array): Promise<MkvSubtitle[]> {
       try {
         header = text(await decoded(codecPrivate, encoding ?? undefined, 2));
       } catch {
-        // Unreadable or oversized: the private data is taken as absent.
-        header = '';
+        // Unreadable or oversized private data: the track is kept on purpose,
+        // without its header.
       }
     }
     const tag = bcp47 ?? language;

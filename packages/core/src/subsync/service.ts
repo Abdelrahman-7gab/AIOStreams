@@ -5,6 +5,7 @@ import {
   makeRequest,
   readBodyCapped,
 } from '../utils/index.js';
+import { tagLanguage } from '../utils/languages.js';
 import type { Span } from './align.js';
 import { planRetime, type PlanNote } from './plan.js';
 import { finalUrl } from './reader.js';
@@ -408,6 +409,15 @@ export function outcomeTtl(outcome: SyncOutcome): number {
  */
 export const MAX_CHECKED_PER_LANGUAGE = 5;
 
+/**
+ * One key for every spelling of a language ('eng', 'ENG', 'en'), so they share
+ * a cap; a code the language table lacks is trimmed and lower-cased.
+ */
+function languageKey(lang: string | undefined): string {
+  const raw = (lang ?? '').trim().toLowerCase();
+  return (raw && tagLanguage(raw)) || raw;
+}
+
 /** The first `perLanguage` of each language, in order. */
 export function limitPerLanguage<T extends { lang?: string }>(
   items: T[],
@@ -415,7 +425,7 @@ export function limitPerLanguage<T extends { lang?: string }>(
 ): T[] {
   const seen = new Map<string, number>();
   return items.filter((item) => {
-    const key = item.lang ?? '';
+    const key = languageKey(item.lang);
     const count = (seen.get(key) ?? 0) + 1;
     seen.set(key, count);
     return count <= perLanguage;
