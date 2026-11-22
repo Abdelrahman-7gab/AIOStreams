@@ -5,6 +5,7 @@ import {
   isNotice,
   madeOnDemand,
   noteNotice,
+  outcomeTtl,
   quotaSpent,
 } from './service.js';
 
@@ -138,5 +139,19 @@ describe('madeOnDemand', () => {
         false,
         path
       );
+  });
+});
+
+describe('outcomeTtl', () => {
+  it('asks again within the hour when a subtitle could not be checked or was a notice', () => {
+    // The file's timings are read again after an hour; a day-long "unchecked"
+    // would keep a list unsorted after they become readable.
+    assert.equal(outcomeTtl('unchecked'), 3600);
+    assert.equal(outcomeTtl('notice'), 3600);
+  });
+
+  it('keeps what a check found for a day', () => {
+    for (const outcome of ['retimed', 'in-time', 'unmatched'] as const)
+      assert.equal(outcomeTtl(outcome), 24 * 3600, outcome);
   });
 });

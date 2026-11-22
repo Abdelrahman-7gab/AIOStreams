@@ -8,7 +8,7 @@ import type { ParsedStream } from '../db/schemas.js';
 
 /** The expression the config excludes streams with. */
 const TOO_SHORT =
-  "queryType == 'movie' and runtime > 0 ? duration(streams, 1, runtime * 0.7) : []";
+  "queryType == 'movie' and runtime > 0 ? duration(streams, 1, runtime * 0.85) : []";
 
 class Selector extends StreamSelector {
   stream(id: string, minutes?: number): ParsedStream {
@@ -38,6 +38,19 @@ describe('duration()', () => {
       'clip',
       'other-film',
     ]);
+  });
+
+  it('drops a cut far shorter than the film but keeps sped-up releases', async () => {
+    // Project Hail Mary is listed at 157 minutes. A 123-minute "2160p" file was
+    // played first; real releases run 151 to 156 minutes, and a PAL speed-up
+    // (4% faster) gives about 151.
+    const selector = new Selector({ queryType: 'movie', runtime: 157 });
+    const streams = [
+      selector.stream('cut', 123),
+      selector.stream('pal', 151),
+      selector.stream('web-dl', 156),
+    ];
+    assert.deepEqual(ids(await selector.select(streams, TOO_SHORT)), ['cut']);
   });
 
   it('removes nothing when the runtime is unknown', async () => {

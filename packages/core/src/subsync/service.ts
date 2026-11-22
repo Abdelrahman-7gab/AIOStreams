@@ -257,9 +257,8 @@ export async function syncedSubtitle(
   const text = original.body.toString('latin1');
   const { body, outcome } = await judgeToFile(text, link);
   if (outcome === 'notice') noteNotice(link.subtitleUrl, text);
-  // A notice is kept briefly: the real subtitle may come once the quota resets.
   await outcomes()
-    .set(token, outcome, outcome === 'notice' ? NOTICE_TTL_S : LINK_TTL_S)
+    .set(token, outcome, outcomeTtl(outcome))
     .catch(() => undefined);
   if (body === null) return { ...original, synced: false };
   await synced().set(
@@ -388,6 +387,18 @@ export function noteNotice(url: string, text: string, now = Date.now()) {
  */
 export const quotaSpent = (url: string, now = Date.now()) =>
   QUOTA_LIMITED.test(url) && now < quotaSpentUntil;
+
+/**
+ * How long a subtitle's outcome is kept. A notice is kept briefly, as the real
+ * subtitle may come once the quota resets; so is a subtitle that couldn't be
+ * checked, as the file's timings are asked again an hour later and a list
+ * should sort by them once they are read.
+ */
+export function outcomeTtl(outcome: SyncOutcome): number {
+  if (outcome === 'notice') return NOTICE_TTL_S;
+  if (outcome === 'unchecked') return NO_REFERENCE_TTL_S;
+  return LINK_TTL_S;
+}
 
 /** How many subtitles are checked at once when a list is asked for. */
 const CHECKS_AT_ONCE = 4;
