@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
-import { drainServer, once, registerWebSocketServer } from './drain.js';
+import {
+  drainServer,
+  exitAfterShutdown,
+  once,
+  registerWebSocketServer,
+} from './drain.js';
 
 /** A server whose `/slow` answers after `slowMs` and `/hang` never does. */
 async function start(slowMs: number) {
@@ -69,19 +74,52 @@ describe('drainServer', () => {
   });
 
   describe('with WebSocket clients', () => {
-    async function startWs() {
+    /**
+     * A registered server; `authMs` delays each upgrade the way the Jellyfin
+     * socket's sign-in check does, and `beforeClose` is passed to the drain.
+     */
+    async function startWs(
+      opts: { authMs?: number; beforeClose?: () => Promise<void> } = {}
+    ) {
       const { server, get } = await start(400);
       const wss = new WebSocketServer({ noServer: true });
-      registerWebSocketServer(wss);
-      server.on('upgrade', (req, socket, head) =>
-        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
-      );
+      registerWebSocketServer(wss, { beforeClose: opts.beforeClose });
+      server.on('upgrade', (req, socket, head) => {
+        const upgrade = () =>
+          wss.handleUpgrade(req, socket, head, (ws) =>
+            wss.emit('connection', ws, req)
+          );
+        if (opts.authMs) setTimeout(upgrade, opts.authMs);
+        else upgrade();
+      });
       const { port } = server.address() as AddressInfo;
-      const client = new WebSocket(`ws://127.0.0.1:${port}/socket`);
-      await new Promise((r) => client.once('open', r));
-      const closed = new Promise<number>((r) => client.once('close', (c) => r(c)));
-      return { server, get, client, closed };
+      const connect = () => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/socket`);
+        const opened = new Promise<void>((r) => ws.once('open', () => r()));
+        const closed = new Promise<{ code: number; at: number }>((r) =>
+          ws.once('close', (code) => r({ code, at: Date.now() }))
+        );
+        return { ws, opened, closed };
+      };
+      const first = connect();
+      await first.opened;
+      const closed = first.closed.then((c) => c.code);
+      return {
+        server,
+        get,
+        wss,
+        client: first.ws,
+        closed,
+        connect,
+        firstClosed: first.closed,
+      };
     }
+
+    /** Makes a client ignore the close handshake, so only a terminate ends it. */
+    const deaf = (client: WebSocket) =>
+      (
+        client as unknown as { _receiver: { removeAllListeners(): void } }
+      )._receiver.removeAllListeners();
 
     it('closes sockets with 1001 and finishes well under the window', async () => {
       const { server, closed } = await startWs();
@@ -102,12 +140,114 @@ describe('drainServer', () => {
 
     it('terminates a client that never answers the close frame', async () => {
       const { server, client } = await startWs();
-      // A client that ignores the close handshake.
-      (client as unknown as { _receiver: { removeAllListeners(): void } })._receiver.removeAllListeners();
+      deaf(client);
       const startedAt = Date.now();
       expect(await drainServer(server, 10_000)).toBe(true);
       expect(Date.now() - startedAt).toBeLessThan(3000);
     });
+
+    it('closes with 1001 a socket upgraded after the drain started, and still finishes early', async () => {
+      // The sign-in check of the second client is still running when the drain starts.
+      const { server, connect } = await startWs({ authMs: 300 });
+      const late = connect();
+      await new Promise((r) => setTimeout(r, 50));
+      const startedAt = Date.now();
+      expect(await drainServer(server, 4000)).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+      expect((await late.closed).code).toBe(1001);
+    }, 10_000);
+
+    it('terminates the clients still open when the timeout fires', async () => {
+      const { server, client, firstClosed } = await startWs();
+      deaf(client);
+      const startedAt = Date.now();
+      // Shorter than the close frame's grace, so only the timeout can end it.
+      expect(await drainServer(server, 200)).toBe(false);
+      const { at } = await firstClosed;
+      expect(at - startedAt).toBeLessThan(600);
+    });
+
+    it("awaits a server's beforeClose before telling its clients 1001", async () => {
+      const events: string[] = [];
+      const beforeClose = vi.fn(async () => {
+        events.push('beforeClose started');
+        await new Promise((r) => setTimeout(r, 300));
+        events.push('beforeClose done');
+      });
+      const { server, wss, closed, connect } = await startWs({
+        authMs: 100,
+        beforeClose,
+      });
+      // Its sign-in finishes while beforeClose runs: it is turned away at once.
+      const late = connect();
+      void late.closed.then(({ code }) =>
+        events.push(`late client closed ${code}`)
+      );
+      const firstClosed = closed.then((code) => {
+        events.push(`client closed ${code}`);
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      const startedAt = Date.now();
+      expect(await drainServer(server, 10_000)).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(2000);
+      await firstClosed;
+      expect(beforeClose).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([
+        'beforeClose started',
+        'late client closed 1001',
+        'beforeClose done',
+        'client closed 1001',
+      ]);
+      wss.close();
+    });
+
+    it('still closes the clients when beforeClose fails', async () => {
+      const { server, wss, closed } = await startWs({
+        beforeClose: () => Promise.reject(new Error('store down')),
+      });
+      expect(await drainServer(server, 10_000)).toBe(true);
+      expect(await closed).toBe(1001);
+      wss.close();
+    });
+  });
+});
+
+describe('exitAfterShutdown', () => {
+  it('exits 0 once the shutdown finishes', async () => {
+    const exit = vi.fn();
+    const onError = vi.fn();
+    await exitAfterShutdown(async () => undefined, onError, exit);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('logs and exits 1 when a teardown step throws', async () => {
+    const exit = vi.fn();
+    const onError = vi.fn();
+    const err = new Error('closeDb failed');
+    await exitAfterShutdown(() => Promise.reject(err), onError, exit);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(err);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('exits 1 even when logging the failure throws', async () => {
+    const exit = vi.fn();
+    await exitAfterShutdown(
+      () => Promise.reject(new Error('boom')),
+      () => {
+        throw new Error('logger gone');
+      },
+      exit
+    ).catch(() => undefined);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('exits on a second signal too when the first shutdown failed', async () => {
+    const exit = vi.fn();
+    const shutdown = once(() => Promise.reject(new Error('boom')));
+    await exitAfterShutdown(shutdown, () => undefined, exit);
+    await exitAfterShutdown(shutdown, () => undefined, exit);
+    expect(exit.mock.calls).toEqual([[1], [1]]);
   });
 });
 

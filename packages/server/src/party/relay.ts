@@ -1137,8 +1137,13 @@ export async function listedParties(user: TokenUser): Promise<PartyListing[]> {
   return out;
 }
 
-/** Marks this replica's members away, for others to take them over. */
-export async function closePartyRelay(): Promise<void> {
+/**
+ * Marks this replica's members away, for others to take them over. The drain
+ * runs it before it closes the relay's sockets: a close seen once `stopping`
+ * is set only unseats, so the members are marked here, in one awaited batch,
+ * not by a write per close that nothing waits for.
+ */
+async function closePartyRelay(): Promise<void> {
   stopping = true;
   await Promise.all(
     [...here.keys()].map((id) =>
@@ -1165,7 +1170,7 @@ export function attachPartyRelay(server: HttpServer): void {
     // Messages are parsed and checked field by field, so bad UTF-8 fails there.
     skipUTF8Validation: true,
   });
-  registerWebSocketServer(wss);
+  registerWebSocketServer(wss, { beforeClose: closePartyRelay });
   const conns = new WeakMap<WebSocket, Conn>();
 
   const heartbeat = setInterval(() => {
@@ -1190,6 +1195,8 @@ export function attachPartyRelay(server: HttpServer): void {
   wss.on(
     'connection',
     (ws: WebSocket, _req: IncomingMessage, address: string) => {
+      // Shutting down: no hello from it may seat a member here now.
+      if (stopping) return void ws.close(1001, 'Server restarting');
       if (!addresses.connect(address)) return void ws.close(4029);
       const conn: Conn = {
         ws,

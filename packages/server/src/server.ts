@@ -8,10 +8,10 @@ import {
   settleMetricsHistory,
   stopMetricsHistory,
 } from './utils/system-metrics.js';
-import { attachPartyRelay, closePartyRelay } from './party/relay.js';
+import { attachPartyRelay } from './party/relay.js';
 import { startNfsShare, stopNfsShare } from './nfs.js';
 import { startFuseMount, stopFuseMount } from './fuse.js';
-import { drainServer, once } from './utils/drain.js';
+import { drainServer, exitAfterShutdown, once } from './utils/drain.js';
 import type { Server } from 'node:http';
 
 import {
@@ -483,6 +483,7 @@ async function start() {
 const shutdown = once(async function shutdown() {
   // A rolling update has already moved new requests to the next container;
   // the ones this one is answering finish before anything they use closes.
+  // The drain marks the party relay's members away before closing its sockets.
   const inTime = await drainServer(httpServer, DRAIN_TIMEOUT_MS);
   if (!inTime)
     logger.warn('Closed connections still open after the drain window');
@@ -497,7 +498,6 @@ const shutdown = once(async function shutdown() {
   await flushAllDiskCaches().catch(() => undefined);
   await flushWatchState().catch(() => undefined);
   await flushPendingIds().catch(() => undefined);
-  await closePartyRelay();
   await sharedBackend()
     .stop()
     .catch(() => undefined);
@@ -514,17 +514,14 @@ process.on('uncaughtException', (err) => {
   logger.fatal({ err }, 'uncaught exception ');
 });
 
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received. Shutting down gracefully...');
-  await shutdown();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received. Shutting down gracefully...');
-  await shutdown();
-  process.exit(0);
-});
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    logger.info(`${signal} received. Shutting down gracefully...`);
+    void exitAfterShutdown(shutdown, (err) =>
+      logger.error({ err }, 'Shutdown failed')
+    );
+  });
+}
 
 start().catch((error) => {
   if (error instanceof ConfigStartupError) {
