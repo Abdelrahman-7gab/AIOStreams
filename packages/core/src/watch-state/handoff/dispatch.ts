@@ -10,6 +10,8 @@ import { getSimpleTextHash } from '../../utils/crypto.js';
 import { IdParser, type IdType } from '../../utils/id-parser.js';
 import { sinkProbeMs } from './deliver.js';
 import { pullUrlFor, pushUrlFor, uniqueByAddress } from './resolve.js';
+import { catchUpSink } from './catchup.js';
+import { startsWriting } from './catchup-plan.js';
 import {
   DROP_EVENTS,
   PLAYBACK_EVENTS,
@@ -214,6 +216,11 @@ export async function ensurePlaybackSink(
     return existing;
   }
 
+  // A tracker that only now takes writes for this history is sent what it missed.
+  const catchUp = startsWriting(
+    existing ? { events: existing.events, baseUrl: existing.baseUrl } : null,
+    { events: sink.events, baseUrl: sink.baseUrl }
+  );
   const row = await PlaybackHandoffRepository.ensureSink(scope, {
     addonInstanceId: sink.instanceId,
     addonName: sink.name,
@@ -227,6 +234,8 @@ export async function ensurePlaybackSink(
   });
   remember(key, row, now);
   void touchActive(row, now);
+  if (catchUp && appConfig.watchState.reportEnabled)
+    void catchUpSink(scope, sink);
   return row;
 }
 

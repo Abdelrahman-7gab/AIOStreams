@@ -31,3 +31,5 @@ export {
   type PlaybackEventInput,
 } from './dispatch.js';
 export { deliverPlaybackEvents } from './deliver.js';
+export { catchUpSink } from './catchup.js';
+export { planCatchUp, startsWriting } from './catchup-plan.js';
