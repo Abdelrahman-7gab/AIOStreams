@@ -37,6 +37,29 @@ function ranked<T extends string>(stored: unknown, all: readonly T[]): T[] {
   return [...new Set([...saved, ...all])];
 }
 
+/**
+ * A user's configuration with the server's audio languages when the user has
+ * chosen none, so a file's own default track is only the last resort.
+ */
+export function withDefaultAudioLanguages(
+  config: Record<string, unknown> | null | undefined,
+  defaults: readonly string[]
+): Record<string, unknown> {
+  const own = config ?? {};
+  const list = own.AudioLanguages;
+  const chosen =
+    (Array.isArray(list) && list.some((l) => typeof l === 'string' && l)) ||
+    (typeof own.AudioLanguagePreference === 'string' &&
+      !!own.AudioLanguagePreference);
+  const languages = defaults.filter((l) => l);
+  if (chosen || !languages.length) return own;
+  return {
+    ...own,
+    AudioLanguagePreference: languages[0],
+    AudioLanguages: [...languages],
+  };
+}
+
 /** A stored configuration, with Jellyfin's defaults for what it leaves out. */
 export function trackPreferencesFrom(
   config: Record<string, unknown> | null | undefined

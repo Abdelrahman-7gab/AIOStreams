@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import * as constants from '../../utils/constants.js';
-import { seconds, byteSize, optionalUrlString } from './helpers.js';
+import {
+  seconds,
+  byteSize,
+  optionalUrlString,
+  commaSeparatedList,
+} from './helpers.js';
 import type { RuntimeConfigSection } from '../types.js';
 
 /**
@@ -146,6 +151,16 @@ export const jellyfinSchema = {
     description:
       "Lets a user with a PIN of 6 or more digits sign in on a configuration's /jellyfin/<uuid>/<encryptedPassword> address with that PIN instead of the configuration password, so its owner can hand each person their own user without sharing the password. That address holds the same credential as the configuration's Stremio manifest URL, so anyone with that URL who learns or guesses a PIN can use that user. The primary user and users without a PIN still need the password. Leave this off on a public instance.",
     env: 'JELLYFIN_PIN_SIGN_IN',
+    requiresRestart: false,
+    secret: false,
+  },
+  defaultAudioLanguages: {
+    schema: commaSeparatedList,
+    default: [] as string[],
+    label: 'Default audio languages',
+    description:
+      'Audio languages, as three-letter codes such as eng, for every user who has not chosen any in their own settings. A version plays the first of these it has, otherwise its own default track, so a dual audio release starts in English rather than whatever its first track is. Empty leaves each file on its own default.',
+    env: 'JELLYFIN_DEFAULT_AUDIO_LANGUAGES',
     requiresRestart: false,
     secret: false,
   },

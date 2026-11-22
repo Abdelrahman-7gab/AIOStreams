@@ -15,6 +15,7 @@ import {
   sessionKeyFor,
   msToTicks,
   AUDIO_TYPES,
+  withDefaultAudioLanguages,
   SUBTITLE_MODES,
   SUBTITLE_TYPES,
   WatchSessionRepository,
@@ -143,7 +144,15 @@ function withLanguageLists(
 
 export async function storedUserConfiguration(scope: WatchScope) {
   const stored = await JellyfinRepository.getUserConfiguration(scope);
-  return { ...userConfiguration(), ...userPreferences(stored) };
+  return {
+    ...userConfiguration(),
+    ...userPreferences(
+      withDefaultAudioLanguages(
+        stored,
+        appConfig.jellyfin.defaultAudioLanguages
+      )
+    ),
+  };
 }
 
 export function userPolicy(

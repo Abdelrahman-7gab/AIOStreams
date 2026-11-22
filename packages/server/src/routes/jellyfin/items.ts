@@ -59,6 +59,7 @@ import {
   stripInternal,
   subtitleFormatFor,
   trackPreferencesFrom,
+  withDefaultAudioLanguages,
   msToTicks,
   ratingUserData,
   seasonAnimeIds,
@@ -922,7 +923,10 @@ export async function trackPreferences(
   ctx: JellyfinRequestContext
 ): Promise<TrackPreferences> {
   return trackPreferencesFrom(
-    await JellyfinRepository.getUserConfiguration(ctx.watch)
+    withDefaultAudioLanguages(
+      await JellyfinRepository.getUserConfiguration(ctx.watch),
+      appConfig.jellyfin.defaultAudioLanguages
+    )
   );
 }
 
