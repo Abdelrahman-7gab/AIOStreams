@@ -400,6 +400,28 @@ export function outcomeTtl(outcome: SyncOutcome): number {
   return LINK_TTL_S;
 }
 
+/**
+ * How many subtitles per language a list checks ahead. The list itself keeps
+ * every subtitle (how many is the subtitle addon's setting); the rest are
+ * served as they are and checked only when opened, so one play cannot spend a
+ * download-quota provider's allowance on a long list.
+ */
+export const MAX_CHECKED_PER_LANGUAGE = 5;
+
+/** The first `perLanguage` of each language, in order. */
+export function limitPerLanguage<T extends { lang?: string }>(
+  items: T[],
+  perLanguage: number
+): T[] {
+  const seen = new Map<string, number>();
+  return items.filter((item) => {
+    const key = item.lang ?? '';
+    const count = (seen.get(key) ?? 0) + 1;
+    seen.set(key, count);
+    return count <= perLanguage;
+  });
+}
+
 /** How many subtitles are checked at once when a list is asked for. */
 const CHECKS_AT_ONCE = 4;
 
@@ -409,10 +431,13 @@ const CHECKS_AT_ONCE = 4;
  * up carry on, so their results are ready when the subtitle is opened.
  */
 export async function checkSubtitles(
-  items: { token: string; link: SyncLink }[],
+  items: { token: string; link: SyncLink; lang?: string }[],
   budgetMs: number
 ): Promise<Map<string, SyncOutcome>> {
-  const queue = items.filter((i) => checkedAhead(i.link.subtitleUrl));
+  const queue = limitPerLanguage(
+    items.filter((i) => checkedAhead(i.link.subtitleUrl)),
+    MAX_CHECKED_PER_LANGUAGE
+  );
   const work = async () => {
     while (queue.length) {
       const item = queue.shift()!;
