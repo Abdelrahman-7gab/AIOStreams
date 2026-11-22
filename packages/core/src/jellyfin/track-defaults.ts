@@ -37,6 +37,16 @@ function ranked<T extends string>(stored: unknown, all: readonly T[]): T[] {
   return [...new Set([...saved, ...all])];
 }
 
+/** The user picked audio languages of their own, as a list or Jellyfin's single one. */
+function hasOwnLanguages(config: Record<string, unknown> | null | undefined) {
+  const list = config?.AudioLanguages;
+  const single = config?.AudioLanguagePreference;
+  return (
+    (Array.isArray(list) && list.some((l) => typeof l === 'string' && !!l)) ||
+    (typeof single === 'string' && !!single)
+  );
+}
+
 /**
  * A user's configuration with the server's audio languages when the user has
  * chosen none, so a file's own default track is only the last resort.
@@ -53,13 +63,8 @@ export function withDefaultAudioLanguages(
   playDefaultTrack = true
 ): Record<string, unknown> {
   const own = config ?? {};
-  const list = own.AudioLanguages;
-  const chosen =
-    (Array.isArray(list) && list.some((l) => typeof l === 'string' && l)) ||
-    (typeof own.AudioLanguagePreference === 'string' &&
-      !!own.AudioLanguagePreference);
   const languages = defaults.filter((l) => l);
-  if (!chosen && languages.length)
+  if (!hasOwnLanguages(own) && languages.length)
     return {
       ...own,
       AudioLanguagePreference: languages[0],
@@ -71,44 +76,91 @@ export function withDefaultAudioLanguages(
   return own;
 }
 
+const LANGUAGE_LISTS = [
+  ['AudioLanguagePreference', 'AudioLanguages'],
+  ['SubtitleLanguagePreference', 'SubtitleLanguages'],
+] as const;
+
 /**
- * A configuration about to be stored, without the audio settings that only
- * repeat what `withDefaultAudioLanguages` fills in. The apps read a
- * configuration and save the whole of it back, so without this the server's
- * default would become each user's own choice the first time they saved any
- * setting, and a later change of the default would never reach them. What
- * differs from the fill-in, in the languages or in the switch, is their choice
- * and is kept whole. A user who picks exactly the default follows it from then.
+ * Keeps each single language the first of its list. A client that only knows
+ * the single one may send back the list it read, so a single language that
+ * isn't that list's first is its choice, and goes to the front.
+ */
+function withLanguageLists(
+  config: Record<string, unknown>,
+  sent: Record<string, unknown>
+): Record<string, unknown> {
+  for (const [single, list] of LANGUAGE_LISTS) {
+    if (!(single in sent) && !(list in sent)) continue;
+    const languages = (config[list] as string[] | undefined) ?? [];
+    const one = config[single] as string;
+    if (single in sent && one !== (languages[0] ?? ''))
+      config[list] = one ? [one, ...languages.filter((l) => l !== one)] : [];
+    config[single] = (config[list] as string[] | undefined)?.[0] ?? '';
+  }
+  return config;
+}
+
+/**
+ * The configuration to store when an app saves `sent` over `stored`, without
+ * the audio settings that only repeat what `withDefaultAudioLanguages` filled
+ * in. The apps read a configuration and save the whole of it back, so without
+ * this the server's default would become each user's own choice the first time
+ * they saved any setting, and a later change of the default would never reach
+ * them. What differs from what the app read, in the languages or in the
+ * switch, is their choice and is kept whole. A user who picks exactly the
+ * default languages follows them from then.
+ *
+ * A stock Jellyfin app knows only the single language, so a user on the
+ * server's languages sends back just their first: that is the whole default.
+ * The switch the app read was the server's unless the user has their own
+ * languages and their own switch stored, and saved back unchanged it stays the
+ * server's.
  */
 export function withoutDefaultAudioLanguages(
-  config: Record<string, unknown>,
+  sent: Record<string, unknown>,
   defaults: readonly string[],
-  playDefaultTrack = true
+  playDefaultTrack = true,
+  stored: Record<string, unknown> | null = null
 ): Record<string, unknown> {
-  const fill = withDefaultAudioLanguages(null, defaults, playDefaultTrack);
+  const languages = defaults.filter((l) => l);
+  const onDefault = !!languages.length && !hasOwnLanguages(stored);
+  const sentList = sent.AudioLanguages;
+  const echoed =
+    onDefault &&
+    !(Array.isArray(sentList) && sentList.length) &&
+    sent.AudioLanguagePreference === languages[0];
+  const incoming = echoed ? { ...sent, AudioLanguages: [...languages] } : sent;
+  const config = withLanguageLists({ ...stored, ...incoming }, incoming);
+
   const list = config.AudioLanguages;
   const single = config.AudioLanguagePreference;
   const noLanguages =
     (list === undefined || (Array.isArray(list) && !list.length)) &&
     (single === undefined || single === '');
-  const filledList = fill.AudioLanguages as string[] | undefined;
-  const languagesAreFill =
-    !!filledList &&
+  const languagesAreDefault =
+    !!languages.length &&
     Array.isArray(list) &&
-    list.length === filledList.length &&
-    list.every((l, i) => l === filledList[i]) &&
-    (single === undefined || single === fill.AudioLanguagePreference);
-  const switchIsFill =
-    config.PlayDefaultAudioTrack === undefined ||
-    ('PlayDefaultAudioTrack' in fill &&
-      config.PlayDefaultAudioTrack === fill.PlayDefaultAudioTrack);
-  if (!switchIsFill || !(languagesAreFill || noLanguages)) return config;
+    list.length === languages.length &&
+    list.every((l, i) => l === languages[i]) &&
+    (single === undefined || single === languages[0]);
+  const play = config.PlayDefaultAudioTrack;
   const rest = { ...config };
-  if (languagesAreFill) {
-    delete rest.AudioLanguages;
-    delete rest.AudioLanguagePreference;
+  // On the server's languages the server's switch applies, so a switch of
+  // their own needs the languages kept with it.
+  if (languagesAreDefault || (noLanguages && languages.length)) {
+    if (play !== undefined && play !== playDefaultTrack) return config;
+    if (languagesAreDefault) {
+      delete rest.AudioLanguages;
+      delete rest.AudioLanguagePreference;
+    }
+    delete rest.PlayDefaultAudioTrack;
+    return rest;
   }
-  if ('PlayDefaultAudioTrack' in fill) delete rest.PlayDefaultAudioTrack;
+  const ownSwitch =
+    !onDefault && typeof stored?.PlayDefaultAudioTrack === 'boolean';
+  if (play === playDefaultTrack && !ownSwitch)
+    delete rest.PlayDefaultAudioTrack;
   return rest;
 }
 
