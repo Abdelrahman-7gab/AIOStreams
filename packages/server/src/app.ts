@@ -44,6 +44,7 @@ import publicBlocklistRouter from './routes/blocklist.js';
 import publicCommunityRouter from './routes/community.js';
 import webdavRouter from './routes/webdav.js';
 import { createJellyfinRouter } from './routes/jellyfin/index.js';
+import { resolveTagAddress } from './routes/jellyfin/context.js';
 import partyRouter from './party/routes.js';
 import { createNabRouter } from './routes/api/nab.js';
 import {
@@ -90,6 +91,7 @@ import {
   constants,
   createLogger,
   Env,
+  isValidTag,
   VARIANT_PATH_ROUTE,
 } from '@aiostreams/core';
 import { StremioTransformer } from '@aiostreams/core';
@@ -261,6 +263,18 @@ app.use('/webdav', webdavRouter);
 const jellyfinRouter = createJellyfinRouter();
 app.use('/jellyfin/p/:code', jellyfinRouter);
 app.use('/jellyfin/u/:alias', jellyfinRouter);
+/* `/jellyfin/<tag>` opens a picker of one tag's users; any other path goes on. */
+app.use('/jellyfin/:tag', (req, res, next) => {
+  const tag = req.params.tag;
+  if (!isValidTag(tag)) {
+    next();
+    return;
+  }
+  resolveTagAddress(tag).then(
+    (target) => (target ? jellyfinRouter(req, res, next) : next()),
+    next
+  );
+});
 app.use('/jellyfin/:uuid/:encryptedPassword', jellyfinRouter);
 app.use('/jellyfin', jellyfinRouter);
 app.use('/party', partyRouter);

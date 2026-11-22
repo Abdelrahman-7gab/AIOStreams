@@ -14,6 +14,7 @@ import {
   isConfigUuid,
   isEncrypted,
   JellyfinAddressRepository,
+  isValidTag,
   PERSONA_PIN_PATTERN,
   verifyHash,
   mintToken,
@@ -180,6 +181,28 @@ export async function resolveAddressCode(
   return ADDRESS_CODE.test(code)
     ? JellyfinAddressRepository.resolve(code)
     : null;
+}
+
+/** Tags looked up and not found lately, so a stray lowercase path costs no query. */
+const tagMisses = new Map<string, number>();
+const TAG_MISS_TTL_MS = 15_000;
+
+/** The configuration and tag a `/jellyfin/<tag>` address names. */
+export async function resolveTagAddress(
+  tag: string
+): Promise<{ uuid: string; encryptedPassword: string; tag: string } | null> {
+  if (!isValidTag(tag)) return null;
+  const missedAt = tagMisses.get(tag);
+  if (missedAt !== undefined && Date.now() - missedAt < TAG_MISS_TTL_MS)
+    return null;
+  const found = await JellyfinAddressRepository.resolveTag(tag);
+  if (found) {
+    tagMisses.delete(tag);
+  } else {
+    if (tagMisses.size >= 1000) tagMisses.clear();
+    tagMisses.set(tag, Date.now());
+  }
+  return found;
 }
 
 export async function resolveUuid(uuidOrAlias: string): Promise<string | null> {
@@ -690,6 +713,13 @@ export const jellyfinContext: RequestHandler = async (req, res, next) => {
       req.jfMount = target;
     } else if (params.code) {
       const target = await resolveAddressCode(params.code);
+      if (!target) {
+        res.status(401).json({ Message: 'Unknown address' });
+        return;
+      }
+      req.jfMount = target;
+    } else if (params.tag) {
+      const target = await resolveTagAddress(params.tag);
       if (!target) {
         res.status(401).json({ Message: 'Unknown address' });
         return;

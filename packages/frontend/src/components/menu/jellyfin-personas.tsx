@@ -96,6 +96,128 @@ function PersonalAddress({
   );
 }
 
+/** The server's tag rule: lowercase, so `/jellyfin/<tag>` reads well. It also refuses a few reserved names. */
+const TAG_SHAPE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const MAX_TAGS = 10;
+
+/** A tag as typed: trimmed, lowercased, spaces to dashes. */
+function tagOf(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/^-+/, '')
+    .slice(0, 32);
+}
+
+function tagsFrom(text: string): string[] {
+  const tags = text
+    .split(',')
+    .map(tagOf)
+    .filter((tag) => TAG_SHAPE.test(tag));
+  return [...new Set(tags)].slice(0, MAX_TAGS);
+}
+
+function TagsField({
+  value,
+  known,
+  onChange,
+}: {
+  value: readonly string[];
+  /** Tags other users already have, offered with one click. */
+  known: readonly string[];
+  onChange: (tags: string[] | undefined) => void;
+}) {
+  const [text, setText] = useState(value.join(', '));
+  const set = (tags: string[]) => onChange(tags.length ? tags : undefined);
+  const offered = known.filter((tag) => !value.includes(tag));
+  return (
+    <div className="space-y-2">
+      <TextInput
+        label="Tags"
+        help="Groups, separated by commas, like home, friends. Each tag gets its own sign-in address listing just its users, and a user with tags sees only the users sharing one. Leave empty to see everyone."
+        placeholder="home, friends"
+        value={text}
+        onValueChange={(next) => {
+          setText(next);
+          set(tagsFrom(next));
+        }}
+        onBlur={() => setText(value.join(', '))}
+      />
+      {offered.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {offered.map((tag) => (
+            <Button
+              key={tag}
+              size="sm"
+              intent="gray-subtle"
+              rounded
+              leftIcon={<FiPlus />}
+              onClick={() => {
+                const next = [...value, tag].slice(0, MAX_TAGS);
+                setText(next.join(', '));
+                set(next);
+              }}
+            >
+              {tag}
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Each tag's sign-in address and who it lists. */
+function TagAddresses({
+  baseUrl,
+  groups,
+}: {
+  baseUrl: string;
+  groups: { tag: string; names: string[] }[];
+}) {
+  if (!groups.length) return null;
+  const copy = (url: string) =>
+    copyToClipboard(url, {
+      onSuccess: () => toast.success('Address copied to clipboard'),
+      onError: () => toast.error('Failed to copy address'),
+    });
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-medium text-white">Tag addresses</p>
+      <p className="text-xs text-[--muted]">
+        Use one as the server address in a Jellyfin app: its picker lists only
+        that tag&apos;s users. Signing in still needs the password, a PIN, or
+        Quick Connect. Works once you save.
+      </p>
+      <ul className="divide-y divide-gray-800 rounded-md border border-gray-800">
+        {groups.map(({ tag, names }) => {
+          const url = `${baseUrl}/jellyfin/${tag}`;
+          return (
+            <li key={tag} className="flex items-center gap-3 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-white">{url}</p>
+                <p className="truncate text-xs text-[--muted]">
+                  {names.join(', ')}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                intent="white"
+                rounded
+                onClick={() => void copy(url)}
+              >
+                Copy
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 /** Tracker addons repeat this rule to match a name to its id, so it must not change. */
 function slugOf(name: string): string {
   return (
@@ -443,6 +565,21 @@ export function JellyfinPersonas() {
   const personas = userData.jellyfin?.personas ?? [];
   const primary = userData.jellyfin?.primary;
   const primaryName = primary?.name || userData.addonName || 'Primary user';
+  const tagGroups = (() => {
+    const groups = new Map<string, string[]>();
+    const named: [string, readonly string[] | undefined][] = [
+      [primaryName, primary?.tags],
+      ...personas.map((p): [string, readonly string[] | undefined] => [
+        p.name,
+        p.tags,
+      ]),
+    ];
+    for (const [name, tags] of named)
+      for (const tag of tags ?? [])
+        groups.set(tag, [...(groups.get(tag) ?? []), name]);
+    return [...groups].map(([tag, names]) => ({ tag, names }));
+  })();
+  const knownTags = tagGroups.map((g) => g.tag);
   const variants: VariantOptionList = (userData.variants ?? [])
     .filter((v) => v.enabled !== false)
     .map((v) => ({
@@ -569,6 +706,7 @@ export function JellyfinPersonas() {
       trackers,
       hidden: draft.hidden || undefined,
       address: draft.hidden ? (draft.address ?? newAddress()) : undefined,
+      tags: draft.tags?.length ? draft.tags : undefined,
       lock: draft.lock || undefined,
     };
     if (editing !== null && editing < personas.length) next[editing] = value;
@@ -619,6 +757,7 @@ export function JellyfinPersonas() {
         : undefined,
       trackers: primaryDraft.trackers,
       hidden: primaryDraft.hidden || undefined,
+      tags: primaryDraft.tags?.length ? primaryDraft.tags : undefined,
       lock: primaryDraft.lock || undefined,
     };
     patch({ primary: Object.values(value).some(Boolean) ? value : undefined });
@@ -680,6 +819,9 @@ export function JellyfinPersonas() {
                   ? trackersLabel(primary.trackers)
                   : 'all trackers',
                 primary?.hidden ? 'hidden from the picker' : null,
+                primary?.tags?.length
+                  ? `tags: ${primary.tags.join(', ')}`
+                  : null,
                 primary?.lock ? 'PIN' : null,
               ]
                 .filter(Boolean)
@@ -710,6 +852,9 @@ export function JellyfinPersonas() {
                     ? `tracker id ${persona.id}`
                     : null,
                   persona.hidden ? 'kept separate' : null,
+                  persona.tags?.length
+                    ? `tags: ${persona.tags.join(', ')}`
+                    : null,
                   persona.lock ? 'PIN' : null,
                 ]
                   .filter(Boolean)
@@ -757,6 +902,8 @@ export function JellyfinPersonas() {
         )}
       </div>
 
+      <TagAddresses baseUrl={baseUrl} groups={tagGroups} />
+
       {primaryDraft && (
         <Modal
           open
@@ -803,6 +950,11 @@ export function JellyfinPersonas() {
               onValueChange={(value) =>
                 setPrimaryDraft({ ...primaryDraft, avatar: value || undefined })
               }
+            />
+            <TagsField
+              value={primaryDraft.tags ?? []}
+              known={knownTags}
+              onChange={(tags) => setPrimaryDraft({ ...primaryDraft, tags })}
             />
             <Switch
               label="Hide from the sign-in picker"
@@ -897,6 +1049,12 @@ export function JellyfinPersonas() {
               onValueChange={(value) =>
                 setDraft({ ...draft, avatar: value || undefined })
               }
+            />
+
+            <TagsField
+              value={draft.tags ?? []}
+              known={knownTags}
+              onChange={(tags) => setDraft({ ...draft, tags })}
             />
 
             <Switch

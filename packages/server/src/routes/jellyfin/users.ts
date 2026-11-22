@@ -16,6 +16,9 @@ import {
   msToTicks,
   AUDIO_TYPES,
   withDefaultAudioLanguages,
+  pickerAllows,
+  pickerUsers,
+  userListedFor,
   SUBTITLE_MODES,
   SUBTITLE_TYPES,
   WatchSessionRepository,
@@ -346,19 +349,13 @@ export async function authenticationResult(
   };
 }
 
-/** Off the sign-in picker and out of other users' lists. */
-function isHidden(userData: Faced, user: JellyfinPersona | null): boolean {
-  return !!(user ? user.hidden : userData.jellyfin?.primary?.hidden);
-}
-
-/** A list shows its caller and the users not hidden; a hidden persona sees only itself. */
+/** A list shows its caller and the users not hidden; tags narrow it ({@link userListedFor}). */
 export function listedFor(
   userData: Faced,
   caller: JellyfinPersona | null,
   user: JellyfinPersona | null
 ): boolean {
-  if ((caller?.id ?? '') === (user?.id ?? '')) return true;
-  return !caller?.hidden && !isHidden(userData, user);
+  return userListedFor(userData, caller, user);
 }
 
 /** The account first; an API key lists every user it can act as. */
@@ -375,14 +372,21 @@ function allUsers(
     .map((p) => userDto(uuid, userData, p, opts));
 }
 
-/** A personal address lists its own user, any other picker everyone not hidden. */
+/** A personal address lists its own user, a tag's address its users, any other picker everyone not hidden. */
 export function pickerListed(
   mount: PickerMount,
   userData: UserData
 ): (JellyfinPersona | null)[] {
-  return mount.persona
-    ? personasOf(userData).filter((p) => p.id === mount.persona && p.hidden)
-    : [null, ...personasOf(userData)].filter((p) => !isHidden(userData, p));
+  return pickerUsers(mount, userData);
+}
+
+/** Whether a picker address may sign in as `user`: a tag's address only its own users. */
+function onPicker(
+  mount: PickerMount | undefined,
+  userData: UserData,
+  user: JellyfinPersona | null
+): boolean {
+  return pickerAllows(mount, userData, user);
 }
 
 /**
@@ -475,7 +479,9 @@ async function pickerTarget(
   if (!userData) return null;
   if (!mount.persona) {
     const persona = personaByName(userData, name);
-    return persona ? { userData, persona } : null;
+    return persona && onPicker(mount, userData, persona)
+      ? { userData, persona }
+      : null;
   }
   const persona = personaById(userData, mount.persona);
   if (!persona?.hidden) return null;
@@ -586,7 +592,7 @@ router.post(
           uuid.toLowerCase()
           ? { persona: null }
           : null));
-    if (!signIn) {
+    if (!signIn || !onPicker(mount, userData, signIn.persona)) {
       res.status(401).json({ Message: 'Invalid username or password' });
       return;
     }

@@ -27,6 +27,8 @@ import {
   type PlaylistItem,
   type SavedGroup,
   type SharedMessage,
+  tagsAllow,
+  userTags,
 } from '@aiostreams/core';
 import { isTrustedIp } from '../middlewares/ip.js';
 import { userForToken, type TokenUser } from '../routes/jellyfin/context.js';
@@ -74,6 +76,8 @@ interface Home {
   uuid: string;
   userId: string;
   hidden: boolean;
+  /** The host's tags: a tagged user lists only parties a tag-mate hosts. */
+  tags?: string[];
   code: string;
   host: string;
   avatar?: string;
@@ -609,6 +613,7 @@ function homeOf(user: TokenUser | null, code: string | undefined): Home | null {
     uuid: user.uuid,
     userId: user.userId,
     hidden: !!user.persona?.hidden,
+    tags: userTags(user.userData, user.persona)?.slice(),
     code,
     host: user.persona?.name ?? accountName(user.userData),
     avatar: user.persona
@@ -1113,7 +1118,11 @@ export async function listedParties(user: TokenUser): Promise<PartyListing[]> {
     const visible =
       home.hidden || user.persona?.hidden
         ? home.userId === user.userId
-        : instance || home.uuid === user.uuid;
+        : home.uuid === user.uuid &&
+            home.userId !== user.userId &&
+            !tagsAllow(userTags(user.userData, user.persona), home.tags)
+          ? false
+          : instance || home.uuid === user.uuid;
     if (!visible || party.lock.joins) continue;
     out.push({
       party: party.id,

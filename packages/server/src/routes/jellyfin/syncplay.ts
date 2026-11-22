@@ -21,6 +21,8 @@ import {
   type QueueSnapshot,
   type SavedGroup,
   type SharedMessage,
+  tagsAllow,
+  userTags,
 } from '@aiostreams/core';
 import { withinQueue } from '../../party/limits.js';
 import {
@@ -58,6 +60,8 @@ interface Home {
   userId: string;
   /** Started by a user others don't see, who alone sees it. */
   hidden: boolean;
+  /** Its starter's tags: a tagged user sees only groups started by a tag-mate. */
+  tags?: string[];
 }
 
 interface Group {
@@ -286,6 +290,12 @@ function memberOf(ctx: JellyfinRequestContext) {
 function visibleTo(g: Group, ctx: JellyfinRequestContext): boolean {
   const { home } = g;
   if (home.hidden || ctx.persona?.hidden) return home.userId === ctx.userId;
+  if (
+    home.uuid === ctx.uuid &&
+    home.userId !== ctx.userId &&
+    !tagsAllow(userTags(ctx.userData, ctx.persona), home.tags)
+  )
+    return false;
   return appConfig.party.scope === 'instance' || home.uuid === ctx.uuid;
 }
 
@@ -471,6 +481,7 @@ router.post(
             uuid: ctx.uuid,
             userId: ctx.userId,
             hidden: !!ctx.persona?.hidden,
+            tags: userTags(ctx.userData, ctx.persona)?.slice(),
           },
           away: {},
         };

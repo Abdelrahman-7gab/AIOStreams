@@ -22,6 +22,7 @@ import {
 import { ConfigProfileRepository } from './config-profiles.js';
 import { ConfigSessionRepository } from './config-sessions.js';
 import { JellyfinAddressRepository } from './jellyfin-addresses.js';
+import { configTags } from '../../jellyfin/tags.js';
 import { LinkedAccountRepository } from './linked-accounts.js';
 
 const APIError = constants.APIError;
@@ -156,7 +157,8 @@ export class UserRepository {
           tx,
           uuid,
           encryptedPassword,
-          validatedConfig.jellyfin?.personas ?? []
+          validatedConfig.jellyfin?.personas ?? [],
+          configTags(validatedConfig.jellyfin)
         );
       });
       logger.info(`Created a new user with UUID: ${uuid}`);
@@ -462,7 +464,8 @@ export class UserRepository {
           tx,
           uuid,
           encryptedPassword.data,
-          validatedConfig.jellyfin?.personas ?? []
+          validatedConfig.jellyfin?.personas ?? [],
+          configTags(validatedConfig.jellyfin)
         );
       });
       logger.info(`Updated user ${uuid} with an updated configuration`);

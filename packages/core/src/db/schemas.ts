@@ -2,6 +2,7 @@ import { z } from 'zod';
 import * as constants from '../utils/constants.js';
 import { config } from '../config/index.js';
 import { WD1_KEY_REGEX } from '../release-blocklist/keys.js';
+import { RESERVED_TAGS, TAG_PATTERN } from '../jellyfin/tags.js';
 
 /**
  * Stream Expression Language string with a runtime-configurable maximum length
@@ -128,6 +129,23 @@ const UserLockSchema = z
   .regex(PERSONA_LOCK_PATTERN, 'A PIN must be 4 to 12 digits.')
   .optional();
 
+/** Groups a user is in: `/jellyfin/<tag>` lists that group, and a tagged user sees only its groups. */
+const UserTagsSchema = z
+  .array(
+    z
+      .string()
+      .regex(
+        TAG_PATTERN,
+        'A tag is 1-32 lowercase letters, digits or "-", starting with a letter or digit.'
+      )
+      .refine((tag) => !RESERVED_TAGS.has(tag), {
+        message:
+          'That tag can’t be used: the server already uses that address (like "web", "u" or "p").',
+      })
+  )
+  .max(10, 'At most 10 tags per user.')
+  .optional();
+
 /** A user a Jellyfin client can sign in as. Shares the configuration's credential. */
 const JellyfinPersonaSchema = z.object({
   // Names the DB partition, so a rename must not touch it.
@@ -152,6 +170,7 @@ const JellyfinPersonaSchema = z.object({
     .string()
     .regex(/^[a-z0-9]{10,32}$/)
     .optional(),
+  tags: UserTagsSchema,
   lock: UserLockSchema,
 });
 
@@ -194,6 +213,7 @@ const JellyfinSettingsFields = z.object({
       trackers: z.array(z.string().min(1)).max(50).optional(),
       /** Kept out of the picker; still signs in by name. */
       hidden: z.boolean().optional(),
+      tags: UserTagsSchema,
       lock: UserLockSchema,
     })
     .optional(),

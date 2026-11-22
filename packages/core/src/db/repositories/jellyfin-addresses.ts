@@ -11,6 +11,19 @@ export interface JellyfinAddressTarget {
   persona: string;
 }
 
+/** What a tag's address, `/jellyfin/<tag>`, opens: the picker of that tag's users. */
+export interface JellyfinTagTarget {
+  uuid: string;
+  encryptedPassword: string;
+  tag: string;
+}
+
+/**
+ * Tag addresses share the table with personal addresses. Their codes carry a
+ * prefix no personal code can have, so `/p/<code>` never opens a tag.
+ */
+const TAG_CODE_PREFIX = 'tag:';
+
 interface AddressRow {
   uuid: string;
   persona: string;
@@ -27,6 +40,14 @@ export class JellyfinAddressRepository {
     string,
     { value: JellyfinAddressTarget; at: number }
   >();
+
+  /** The configuration a tag's address belongs to. */
+  static async resolveTag(tag: string): Promise<JellyfinTagTarget | null> {
+    const found = await this.resolve(TAG_CODE_PREFIX + tag);
+    return found
+      ? { uuid: found.uuid, encryptedPassword: found.encryptedPassword, tag }
+      : null;
+  }
 
   static async resolve(code: string): Promise<JellyfinAddressTarget | null> {
     const cached = this.cache.get(code);
@@ -52,16 +73,31 @@ export class JellyfinAddressRepository {
   }
 
   /**
-   * Makes the stored addresses those of the configuration's hidden users.
-   * Takes the save's transaction, so a refused address refuses the save.
+   * Makes the stored addresses those of the configuration's hidden users and
+   * its tags. Takes the save's transaction, so a refused address refuses the save.
    */
   static async syncForUuid(
     tx: DbDriver,
     uuid: string,
     encryptedPassword: string,
-    personas: JellyfinPersona[]
+    personas: JellyfinPersona[],
+    tags: readonly string[] = []
   ): Promise<void> {
     const wanted = personas.filter((p) => p.hidden && p.address);
+    if (tags.length) {
+      const taken = await tx.query<{ code: string }>(
+        sql`SELECT code FROM jellyfin_user_addresses
+             WHERE uuid <> ${uuid}
+               AND code IN (${join(tags.map((t) => sql`${TAG_CODE_PREFIX + t}`))})`
+      );
+      if (taken.length) {
+        throw new constants.APIError(
+          constants.ErrorCode.USER_INVALID_CONFIG,
+          undefined,
+          `The tag "${taken[0].code.slice(TAG_CODE_PREFIX.length)}" is already used by another configuration on this server. Pick another name.`
+        );
+      }
+    }
     if (wanted.length) {
       const taken = await tx.query<{ code: string }>(
         sql`SELECT code FROM jellyfin_user_addresses
@@ -84,6 +120,12 @@ export class JellyfinAddressRepository {
       await tx.exec(
         sql`INSERT INTO jellyfin_user_addresses (code, uuid, persona, encrypted_password)
             VALUES (${persona.address}, ${uuid}, ${persona.id}, ${encryptedPassword})`
+      );
+    }
+    for (const tag of tags) {
+      await tx.exec(
+        sql`INSERT INTO jellyfin_user_addresses (code, uuid, persona, encrypted_password)
+            VALUES (${TAG_CODE_PREFIX + tag}, ${uuid}, ${''}, ${encryptedPassword})`
       );
     }
     this.forget(uuid);
