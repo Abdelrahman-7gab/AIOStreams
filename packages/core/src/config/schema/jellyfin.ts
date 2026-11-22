@@ -174,6 +174,16 @@ export const jellyfinSchema = {
     requiresRestart: false,
     secret: false,
   },
+  originalAudioOnlyForAnime: {
+    schema: z.boolean(),
+    default: false,
+    label: 'Original language audio only for anime',
+    description:
+      'Counts a user\'s "Original language" audio choice only for anime, where it is usually Japanese; for anything else it is passed over and their next language plays. With "Original language, English", anime plays in Japanese and a Hindi or French film in English.',
+    env: 'JELLYFIN_ORIGINAL_AUDIO_ONLY_FOR_ANIME',
+    requiresRestart: false,
+    secret: false,
+  },
   resolveOnOpen: {
     schema: z.enum(['always', 'never', 'user']),
     default: 'user',

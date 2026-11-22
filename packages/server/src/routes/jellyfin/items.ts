@@ -59,6 +59,7 @@ import {
   stripInternal,
   subtitleFormatFor,
   trackPreferencesFrom,
+  audioPreferencesForTitle,
   withDefaultAudioLanguages,
   msToTicks,
   ratingUserData,
@@ -980,7 +981,11 @@ export function mediaSourcesFrom(
       includeExtension: true,
       hasSegments: opts.hasSegments,
       noticePath: nothingToPlayPath(req, ctx),
-      tracks: opts.tracks,
+      tracks: audioPreferencesForTitle(
+        opts.tracks,
+        memo.isAnime,
+        appConfig.jellyfin.originalAudioOnlyForAnime
+      ),
       originalLanguage: memo.titleMetadata?.originalLanguage,
       fields: opts.fields,
     })

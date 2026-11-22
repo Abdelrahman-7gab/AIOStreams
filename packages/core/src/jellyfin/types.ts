@@ -128,6 +128,8 @@ export interface PlaybackMemo {
   addonSubtitles: SubtitleTrack[];
   /** The requested title, for its original language and a pack's probed files. */
   titleMetadata?: TitleMetadata;
+  /** Whether the title is anime, for audio choices that only apply to anime. */
+  isAnime?: boolean;
   runtimeMs?: number;
   createdAt: number;
 }

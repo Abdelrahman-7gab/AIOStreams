@@ -71,6 +71,23 @@ export function withDefaultAudioLanguages(
   return own;
 }
 
+/**
+ * A user's track preferences for one title. With `originalOnlyForAnime`,
+ * "Original language" counts only for anime: elsewhere it is passed over, so
+ * the next language (English, say) plays rather than a film's own language.
+ */
+export function audioPreferencesForTitle(
+  prefs: TrackPreferences,
+  isAnime: boolean | undefined,
+  originalOnlyForAnime: boolean
+): TrackPreferences {
+  if (!originalOnlyForAnime || isAnime) return prefs;
+  const audioLanguages = prefs.audioLanguages.filter((l) => !isOriginal(l));
+  return audioLanguages.length === prefs.audioLanguages.length
+    ? prefs
+    : { ...prefs, audioLanguages };
+}
+
 /** A stored configuration, with Jellyfin's defaults for what it leaves out. */
 export function trackPreferencesFrom(
   config: Record<string, unknown> | null | undefined

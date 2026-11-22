@@ -1,9 +1,64 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  audioPreferencesForTitle,
+  defaultTrackIndexes,
   trackPreferencesFrom,
   withDefaultAudioLanguages,
 } from './track-defaults.js';
+import type { JellyfinMediaStream } from './types.js';
+
+describe('audioPreferencesForTitle', () => {
+  const audio = (
+    Index: number,
+    Language: string,
+    IsDefault = false
+  ): JellyfinMediaStream => ({ Index, Type: 'Audio', Language, IsDefault });
+  // "Original language, then English", the default track switch off.
+  const prefs = trackPreferencesFrom({
+    AudioLanguages: ['OriginalLanguage', 'eng'],
+    PlayDefaultAudioTrack: false,
+  });
+  const pick = (
+    streams: JellyfinMediaStream[],
+    original: string,
+    isAnime: boolean,
+    onlyForAnime: boolean
+  ) =>
+    defaultTrackIndexes(
+      streams,
+      audioPreferencesForTitle(prefs, isAnime, onlyForAnime),
+      original
+    ).audio;
+
+  it('plays the Japanese track of an anime episode that also has English', () => {
+    const episode = [audio(1, 'eng', true), audio(2, 'jpn')];
+    assert.equal(pick(episode, 'ja', true, true), 2);
+  });
+
+  it('plays English, not the original, for anything that is not anime', () => {
+    // A Hindi film's dual audio release, Hindi marked default.
+    const film = [audio(1, 'hin', true), audio(2, 'eng')];
+    assert.equal(pick(film, 'hi', false, true), 2);
+    // A file flagged as the original language is passed over too.
+    const flagged = [
+      { ...audio(1, 'hin', true), IsOriginal: true },
+      audio(2, 'eng'),
+    ];
+    assert.equal(pick(flagged, 'hi', false, true), 2);
+  });
+
+  it('plays an English dub of an anime that has no Japanese track', () => {
+    const dub = [audio(1, 'eng', true), audio(2, 'spa')];
+    assert.equal(pick(dub, 'ja', true, true), 1);
+  });
+
+  it('leaves the original language to everything when the setting is off', () => {
+    const film = [audio(1, 'hin', true), audio(2, 'eng')];
+    assert.equal(pick(film, 'hi', false, false), 1);
+    assert.equal(audioPreferencesForTitle(prefs, false, false), prefs);
+  });
+});
 
 describe('withDefaultAudioLanguages', () => {
   it("gives a user who chose no audio language the server's", () => {

@@ -407,6 +407,7 @@ async function resolveUncached(
     titleMetadata: streamContext
       ? await requestTitleMetadata(streamContext).catch(() => undefined)
       : undefined,
+    isAnime: streamContext?.isAnime,
     runtimeMs: target.runtimeMs,
     createdAt: Date.now(),
   };
