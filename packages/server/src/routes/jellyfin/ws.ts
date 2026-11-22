@@ -1,6 +1,7 @@
 import type { Server as HttpServer, IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { registerWebSocketServer } from '../../utils/drain.js';
 import {
   config as appConfig,
   createLogger,
@@ -97,6 +98,7 @@ function scopeKey(scope: WatchScope): string {
  */
 export function attachJellyfinWebSocket(server: HttpServer): void {
   const wss = new WebSocketServer({ noServer: true });
+  registerWebSocketServer(wss);
   const byScope = new Map<string, Map<WebSocket, string>>();
 
   const send = (ws: WebSocket, type: string, data?: unknown) => {
