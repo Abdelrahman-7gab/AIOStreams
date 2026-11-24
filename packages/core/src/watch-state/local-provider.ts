@@ -19,6 +19,9 @@ import {
 
 const logger = createLogger('watch-state');
 
+/** Rows per change push from {@link LocalWatchStateProvider.announce}. */
+export const ANNOUNCE_CHUNK = 200;
+
 /** Items shorter than this never create a resume entry. */
 const RESUME_MIN_DURATION_MS = 90_000;
 
@@ -326,6 +329,13 @@ export class LocalWatchStateProvider implements WatchStateProvider {
     });
     if (row) this.notify(scope, [row]);
     return row;
+  }
+
+  /** Rows written elsewhere (an addon read), in chunks so a first import is not one huge push. */
+  announce(scope: WatchScope, rows: WatchStateRow[]): void {
+    for (let i = 0; i < rows.length; i += ANNOUNCE_CHUNK) {
+      this.notify(scope, rows.slice(i, i + ANNOUNCE_CHUNK));
+    }
   }
 
   private notify(scope: WatchScope, rows: WatchStateRow[]) {

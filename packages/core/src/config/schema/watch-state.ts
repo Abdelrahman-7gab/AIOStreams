@@ -89,7 +89,7 @@ export const watchStateSchema = {
     default: 300,
     label: 'Read on demand after',
     description:
-      'When a Jellyfin client asks for Continue Watching or Next Up and the last read is older than this, a fresh one is started in the background. The shelf is always answered from what is already stored, so a slow addon never delays it; the new state appears on the next refresh.',
+      'When a Jellyfin client asks for Continue Watching or Next Up and the last read is older than this, a fresh one is started in the background. The shelf is always answered from what is already stored, so a slow addon never delays it; when the read brings changes, connected clients are told.',
     env: 'WATCH_STATE_PULL_TTL',
     requiresRestart: false,
     secret: false,

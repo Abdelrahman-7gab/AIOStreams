@@ -32,6 +32,7 @@ import {
 import { matchKeysFor } from '../canonical.js';
 import { bySpelling } from '../lookup.js';
 import { playedThrough } from '../local-provider.js';
+import { getWatchStateProvider } from '../index.js';
 import type { ContentRef } from '../types.js';
 
 const logger = createLogger('playback-pull');
@@ -238,6 +239,8 @@ function matchedIdentityFrom(
 
 interface ImportResult {
   written: number;
+  /** Keys of the rows written, for the change push. */
+  changed: string[];
   skipped: number;
   listed: string[];
   rekeyed: [string, string][];
@@ -421,7 +424,8 @@ async function importItems(
   matches: MatchKeys,
   watched: ReadonlySet<string>
 ): Promise<ImportResult> {
-  if (!items.length) return { written: 0, skipped: 0, listed: [], rekeyed: [] };
+  if (!items.length)
+    return { written: 0, changed: [], skipped: 0, listed: [], rekeyed: [] };
 
   const newest = new Map<string, z.infer<typeof StateItemSchema>>();
   for (const item of items) {
@@ -524,6 +528,7 @@ async function importItems(
   for (const row of rows) listed.push(row.identity.itemKey);
   return {
     written: rows.length,
+    changed: rows.map((row) => row.identity.itemKey),
     skipped,
     listed,
     rekeyed: staleMatchKeys(existingRows, matches),
@@ -650,6 +655,7 @@ async function importWatched(
   for (const row of rows) listed.push(row.identity.itemKey);
   return {
     written: rows.length,
+    changed: rows.map((row) => row.identity.itemKey),
     skipped,
     listed,
     rekeyed: staleMatchKeys(existingRows, matches),
@@ -685,7 +691,7 @@ async function importWatchlist(
   now: number,
   db: DbDriver,
   matches: MatchKeys
-): Promise<{ written: number; touched: string[] }> {
+): Promise<{ written: number; changed: string[]; touched: string[] }> {
   const identities = entries.map((entry) => {
     const identity = identityFor(watchlistRef(entry));
     return {
@@ -730,7 +736,11 @@ async function importWatchlist(
     rows.push(row);
   }
   await WatchStateRepository.upsertWatchlist(scope, sink.id, rows, now, db);
-  return { written: rows.length, touched };
+  return {
+    written: rows.length,
+    changed: rows.map((row) => row.identity.itemKey),
+    touched,
+  };
 }
 
 /** A `videoId` other than the meta rates that episode, a `season` that season. */
@@ -766,7 +776,7 @@ async function importRatings(
   now: number,
   db: DbDriver,
   matches: MatchKeys
-): Promise<{ written: number; touched: string[] }> {
+): Promise<{ written: number; changed: string[]; touched: string[] }> {
   const byKey = new Map<string, RatingImport>();
   for (const entry of entries) {
     if (!(entry.rating >= 0 && entry.rating <= 10)) continue;
@@ -800,7 +810,11 @@ async function importRatings(
     rows.push(row);
   }
   await WatchStateRepository.upsertRatings(scope, sink.id, rows, now, db);
-  return { written: rows.length, touched };
+  return {
+    written: rows.length,
+    changed: rows.map((row) => row.identity.itemKey),
+    touched,
+  };
 }
 
 /** The same rules as {@link importWatchlist}. */
@@ -810,7 +824,7 @@ async function importDropped(
   ids: string[],
   now: number,
   db: DbDriver
-): Promise<{ written: number; touched: string[] }> {
+): Promise<{ written: number; changed: string[]; touched: string[] }> {
   const identities = [...new Set(ids)].map((id) =>
     identityFor({ kind: 'series', type: 'series', baseId: id })
   );
@@ -834,7 +848,11 @@ async function importDropped(
     rows.push(identity);
   }
   await WatchStateRepository.upsertDropped(scope, sink.id, rows, now, db);
-  return { written: rows.length, touched };
+  return {
+    written: rows.length,
+    changed: rows.map((identity) => identity.itemKey),
+    touched,
+  };
 }
 
 async function fetchState(sink: SinkRow): Promise<PlaybackStatePayload | null> {
@@ -994,6 +1012,53 @@ export async function pullSink(
   return outcome;
 }
 
+/**
+ * The rows a read changed, as the clients should now see them: those still held
+ * as stored, those it deleted as never played.
+ */
+export function announcedRows(
+  present: ReadonlyMap<string, WatchStateRow>,
+  changed: Iterable<string>,
+  gone: readonly WatchStateRow[]
+): WatchStateRow[] {
+  const out = new Map<string, WatchStateRow>();
+  for (const row of gone) {
+    out.set(row.itemKey, {
+      ...row,
+      played: false,
+      positionMs: 0,
+      playCount: 0,
+      lastPlayedAt: null,
+    });
+  }
+  for (const key of changed) {
+    const row = present.get(key);
+    if (row) out.set(key, row);
+  }
+  return [...out.values()];
+}
+
+/** After the commit, and never failing the read: a missed push only waits for a refresh. */
+export async function announceImport(
+  scope: WatchScope,
+  changed: ReadonlySet<string>,
+  gone: readonly WatchStateRow[]
+): Promise<void> {
+  if (!changed.size && !gone.length) return;
+  try {
+    const present = changed.size
+      ? await WatchStateRepository.getMany(scope, [...changed])
+      : new Map<string, WatchStateRow>();
+    const rows = announcedRows(present, changed, gone);
+    if (rows.length) getWatchStateProvider().announce(scope, rows);
+  } catch (error) {
+    logger.debug(
+      { err: error instanceof Error ? error.message : String(error) },
+      'failed to push imported watch state'
+    );
+  }
+}
+
 async function importState(
   sink: SinkRow,
   payload: PlaybackStatePayload,
@@ -1002,10 +1067,15 @@ async function importState(
   const scope = scopeOf(sink);
   let items: ImportResult = {
     written: 0,
+    changed: [],
     skipped: 0,
     listed: [],
     rekeyed: [],
   };
+  // What this read changed, pushed to open clients once it commits.
+  const changed = new Set<string>();
+  const gone: WatchStateRow[] = [];
+  const reset: string[] = [];
   let watchedWritten = 0;
   let watchedSkipped = 0;
   let watchlistWritten = 0;
@@ -1050,6 +1120,7 @@ async function importState(
       new Set(payload.watched ? watchedKeysOf(payload.watched) : [])
     );
     const imported = new Set(items.listed);
+    for (const key of items.changed) changed.add(key);
     await WatchStateRepository.setMatchKeys(scope, items.rekeyed, tx);
 
     // Always complete, so anything it stopped reporting goes now.
@@ -1059,14 +1130,16 @@ async function importState(
       now,
       'resume',
       imported,
-      tx
+      tx,
+      gone
     );
     removed += await WatchStateRepository.clearStaleRewatches(
       scope,
       sink.id,
       now,
       imported,
-      tx
+      tx,
+      reset
     );
 
     if (payload.watched) {
@@ -1080,6 +1153,7 @@ async function importState(
       );
       watchedWritten = res.written;
       watchedSkipped = res.skipped;
+      for (const key of res.changed) changed.add(key);
       for (const key of res.listed) imported.add(key);
       await WatchStateRepository.setMatchKeys(scope, res.rekeyed, tx);
       await WatchAirTimeRepository.replace(
@@ -1094,7 +1168,8 @@ async function importState(
         now,
         'watched',
         imported,
-        tx
+        tx,
+        gone
       );
 
       // Complete when present, like the watchlist.
@@ -1107,6 +1182,7 @@ async function importState(
           tx
         );
         droppedWritten = drops.written;
+        for (const key of drops.changed) changed.add(key);
         await WatchStateRepository.touchDropped(
           scope,
           sink.id,
@@ -1134,6 +1210,7 @@ async function importState(
         matches
       );
       watchlistWritten = res.written;
+      for (const key of res.changed) changed.add(key);
       await WatchStateRepository.touchWatchlist(
         scope,
         sink.id,
@@ -1159,6 +1236,7 @@ async function importState(
         matches
       );
       ratingsWritten = res.written;
+      for (const key of res.changed) changed.add(key);
       await WatchStateRepository.touchRatings(
         scope,
         sink.id,
@@ -1174,6 +1252,9 @@ async function importState(
       );
     }
   });
+
+  for (const key of reset) changed.add(key);
+  await announceImport(scope, changed, gone);
 
   return {
     unchanged,

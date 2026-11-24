@@ -224,5 +224,7 @@ export interface WatchStateProvider {
   /** Forgets playback of `itemKeys`, or of the whole history; favourites stay. */
   clear(scope: WatchScope, itemKeys?: string[]): Promise<number>;
   onChange(listener: WatchChangeListener): () => void;
+  /** Tells the listeners about rows written outside `record` and `clear`. */
+  announce(scope: WatchScope, rows: WatchStateRow[]): void;
   flush(): Promise<void>;
 }

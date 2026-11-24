@@ -1102,7 +1102,9 @@ export class WatchStateRepository {
     before: number,
     half: 'resume' | 'watched',
     listed: ReadonlySet<string>,
-    db: DbDriver = getDb()
+    db: DbDriver = getDb(),
+    /** Collects each row as it was before it went, for the change push. */
+    gone?: WatchStateRow[]
   ): Promise<number> {
     const playedValue = half === 'watched' ? 1 : 0;
     const candidates = sql`uuid = ${scope.uuid} AND persona = ${scope.persona}
@@ -1116,10 +1118,18 @@ export class WatchStateRepository {
     const stale = rows.map((r) => r.item_key).filter((k) => !listed.has(k));
     let removed = 0;
     for (let i = 0; i < stale.length; i += CHUNK) {
+      const chunk = stale.slice(i, i + CHUNK);
+      if (gone) {
+        for (const row of (
+          await WatchStateRepository.getMany(scope, chunk, db)
+        ).values()) {
+          gone.push(row);
+        }
+      }
       const res = await db.exec(
         sql`DELETE FROM watch_state
              WHERE ${candidates}
-               AND item_key IN (${join(stale.slice(i, i + CHUNK).map((k) => sql`${k}`))})`
+               AND item_key IN (${join(chunk.map((k) => sql`${k}`))})`
       );
       removed += res.rowCount ?? 0;
     }
@@ -1132,7 +1142,9 @@ export class WatchStateRepository {
     sinkId: string,
     before: number,
     listed: ReadonlySet<string>,
-    db: DbDriver = getDb()
+    db: DbDriver = getDb(),
+    /** Collects the keys reset, for the change push. */
+    reset?: string[]
   ): Promise<number> {
     const candidates = sql`uuid = ${scope.uuid} AND persona = ${scope.persona}
              AND origin = 'import' AND sink_id = ${sinkId}
@@ -1142,6 +1154,7 @@ export class WatchStateRepository {
       sql`SELECT item_key FROM watch_state WHERE ${candidates}`
     );
     const stale = rows.map((r) => r.item_key).filter((k) => !listed.has(k));
+    reset?.push(...stale);
     let cleared = 0;
     for (let i = 0; i < stale.length; i += CHUNK) {
       const res = await db.exec(
